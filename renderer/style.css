@@ -765,3 +765,76 @@ body {
 .pick-all.all-checked .p-check, .clean-all.all-checked .c-check {
   background: #85B7EB; border-color: #85B7EB;
 }
+
+/* ============ v1.4：设置页（开关 / 分组 / 行） ============ */
+.set-group {
+  font-size: 10px;
+  color: #55575F;
+  letter-spacing: 0.08em;
+  margin: 12px 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 0.5px solid rgba(255, 255, 255, 0.06);
+}
+.set-group:first-child { margin-top: 0; }
+
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: 11.5px;
+  color: #D5D7DC;
+}
+.set-row.indent { padding-left: 12px; color: #9A9CA4; }
+.set-row > span:first-child { flex: 1; }
+.set-val { font-size: 11px; color: #888A92; font-variant-numeric: tabular-nums; }
+
+.set-note {
+  font-size: 10px;
+  color: #66686F;
+  line-height: 1.6;
+  padding: 2px 0 6px;
+}
+.set-note b { color: #B5D4F4; font-weight: 500; }
+
+/* 开关：纯 CSS 滑块，沿用液态玻璃配色 */
+.switch { position: relative; display: inline-block; flex-shrink: 0; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch i {
+  display: block;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.09);
+  border: 0.5px solid rgba(255, 255, 255, 0.14);
+  transition: background 0.22s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.22s;
+  position: relative;
+}
+.switch i::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #B9BBC2;
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), background 0.22s;
+}
+.switch input:checked + i { background: rgba(29, 158, 117, 0.75); border-color: rgba(29, 158, 117, 0.9); }
+.switch input:checked + i::after { transform: translateX(16px); background: #FFFFFF; }
+.switch input:disabled + i { opacity: 0.35; }
+.switch input:disabled + i::after { background: #66686F; }
+.switch:hover i { border-color: rgba(255, 255, 255, 0.28); }
+
+/* 电池健康：健康度大数字 */
+.big-num {
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: #EDEDF0;
+  margin: 2px 0 8px;
+}
+.big-num.good { color: #5DCAA5; }
+.big-num.warn { color: #EF9F27; }
+.big-num.bad { color: #F09595; }

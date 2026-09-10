@@ -79,6 +79,15 @@ const api = bridge || {
     totalFreed: 12.4e9, freed30d: 4.2e9,
   }),
   cleanPaths: async (entries) => entries.map((e) => ({ path: e.path, ok: true })),
+  // ===== v1.4 降级 mock =====
+  getSettings: async () => ({
+    chime: { enabled: true, from: 9, to: 22, notify: false },
+    health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
+    stealth: { enabled: true },
+    isPackaged: false, loginItem: false, stealthApps: [],
+  }),
+  setSettings: async (patch) => patch,
+  setLoginItem: async () => ({ ok: false, error: '浏览器预览模式不支持' }),
 };
 
 const mioEl = document.getElementById('mio');
@@ -90,6 +99,103 @@ const pupils = [...document.querySelectorAll('.pupil')];
 // HTML 转义（文件名/路径可能含特殊字符）
 function escHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ============ v1.4：设置（整点报时 / 健康提醒 / 隐身）============
+// 声明放在前面：tickClock 会在启动阶段立即调用 chimeTick，不能等到文件末尾才初始化
+const pad2 = (n) => String(n).padStart(2, '0');
+let settings = {
+  chime: { enabled: true, from: 9, to: 22, notify: false },
+  health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
+  stealth: { enabled: true },
+};
+let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [] };
+
+// 报时时段（闭区间，支持跨零点）
+function inChimeRange(h, from, to) {
+  from = Number(from); to = Number(to);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return true;
+  return from <= to ? (h >= from && h <= to) : (h >= from || h <= to);
+}
+
+// 免打扰时段：跨零点时 to 表示「次日几点结束」，故用 <
+function inQuietHours(h) {
+  const q = settings.health || {};
+  const from = Number(q.quietFrom), to = Number(q.quietTo);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from === to) return false;
+  return from > to ? (h >= from || h < to) : (h >= from && h < to);
+}
+
+function reminderSummary() {
+  const h = settings.health;
+  if (!h.enabled) return '健康提醒：已关闭';
+  const on = [h.sit && '久坐 45 分钟', h.water && '喝水 45 分钟', h.eye && '护眼 20 分钟'].filter(Boolean);
+  return on.length ? `健康提醒：${on.join(' · ')}` : '健康提醒：未选择任何项目';
+}
+
+function renderSettings() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+  set('swLogin', settingsMeta.loginItem);
+  set('swChime', settings.chime.enabled);
+  set('swChimeNotify', settings.chime.notify);
+  set('swHealth', settings.health.enabled);
+  set('swSit', settings.health.sit);
+  set('swWater', settings.health.water);
+  set('swEye', settings.health.eye);
+  set('swStealth', settings.stealth.enabled);
+  document.getElementById('chimeRange').textContent =
+    `${pad2(settings.chime.from)}:00 — ${pad2(settings.chime.to)}:00`;
+  document.getElementById('quietRange').textContent =
+    `${pad2(settings.health.quietFrom)}:00 — ${pad2(settings.health.quietTo)}:00`;
+  document.getElementById('swLogin').disabled = !settingsMeta.isPackaged;
+  document.getElementById('loginHint').textContent = settingsMeta.isPackaged
+    ? '关闭后 Mio 不再随登录启动'
+    : '开发模式无法写入登录项，打包版可用';
+  document.getElementById('reminderInfo').textContent = reminderSummary();
+  const h = settings.health;
+  const n = [h.sit, h.water, h.eye].filter(Boolean).length;
+  document.getElementById('settingsBrief').textContent =
+    `自启 ${settingsMeta.loginItem ? '开' : '关'} · 报时 ${settings.chime.enabled ? '开' : '关'} · 健康提醒 ${h.enabled ? n + ' 项' : '关'} · 隐身 ${settings.stealth.enabled ? '开' : '关'}`;
+}
+
+async function loadSettings() {
+  try {
+    const s = await api.getSettings();
+    if (s && s.chime) {
+      settings = { chime: s.chime, health: s.health, stealth: s.stealth };
+      settingsMeta = { isPackaged: !!s.isPackaged, loginItem: !!s.loginItem, stealthApps: s.stealthApps || [] };
+    }
+  } catch {}
+  renderSettings();
+}
+
+function bindSwitch(id, path, after) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('change', async () => {
+    interact();
+    const on = el.checked;
+    if (path === 'login') {
+      const r = await api.setLoginItem(on);
+      if (!r || !r.ok) {
+        el.checked = !on;
+        say((r && r.error) || '设置失败');
+        return;
+      }
+      settingsMeta.loginItem = !!r.openAtLogin;
+      say(r.openAtLogin ? '开机自启已开启' : '开机自启已关闭');
+      renderSettings();
+      return;
+    }
+    const next = { ...settings, [path[0]]: { ...settings[path[0]], [path[1]]: on } };
+    try {
+      const saved = await api.setSettings(next);
+      if (saved && saved.chime) settings = { chime: saved.chime, health: saved.health, stealth: saved.stealth };
+      else settings = next;
+    } catch { settings = next; }
+    renderSettings();
+    if (after) after(on);
+  });
 }
 
 // ============ 情绪状态机 ============
@@ -286,7 +392,7 @@ document.getElementById('dvBack').addEventListener('click', () => { interact(); 
 // 卡片点击钻入详情（内部按钮/勾选项不触发）
 document.querySelectorAll('.expandable').forEach((card) => {
   card.addEventListener('click', (e) => {
-    if (e.target.closest('button, .pick-item, .p-kill, .sort-toggle, .pick-all')) return;
+    if (e.target.closest('button, .pick-item, .p-kill, .sort-toggle, .pick-all, .switch')) return;
     interact();
     openDetail(card);
   });
@@ -357,6 +463,7 @@ async function trashWithConfirm(entries, { level, title }) {
 
 // 时钟
 const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+let lastChimeKey = ''; // v1.4 B：整点报时幂等键
 function tickClock() {
   const d = new Date();
   const hh = String(d.getHours()).padStart(2, '0');
@@ -364,6 +471,30 @@ function tickClock() {
   document.getElementById('clock').textContent = `${hh}:${mm}`;
   document.getElementById('dateLine').textContent =
     `${d.getMonth() + 1}月${d.getDate()}日 星期${WEEK[d.getDay()]}`;
+  chimeTick(d);
+}
+
+// v1.4 B：整点报时
+// 用 "年-月-日-时" 作幂等键：既防同一分钟内重复触发，
+// 也保证休眠唤醒后**不补报**已错过的整点（补报会连响一串，很烦）
+function chimeTick(d) {
+  if (d.getMinutes() !== 0) return;
+  const c = settings.chime || {};
+  if (!c.enabled) return;
+  const h = d.getHours();
+  if (!inChimeRange(h, c.from, c.to)) return;
+  if (inQuietHours(h)) return;
+  const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}-${h}`;
+  if (key === lastChimeKey) return;
+  lastChimeKey = key;
+
+  const hour12 = Intl.DateTimeFormat().resolvedOptions().hour12;
+  const label = hour12
+    ? `现在 ${h % 12 === 0 ? 12 : h % 12} 点`
+    : `现在 ${pad2(h)}:00`;
+  say(label);
+  api.logMessage('Mio · 整点报时', label);
+  if (c.notify) api.notify('Mio · 整点报时', label);
 }
 tickClock();
 setInterval(tickClock, 1000);
@@ -563,6 +694,26 @@ async function pollStatus() {
   document.getElementById('netUp').textContent = '↑ ' + fmtRate(s.net.up);
   document.getElementById('battVal').textContent = s.battery ? s.battery.pct + '%' : '—';
   document.getElementById('battState').textContent = s.battery ? (s.battery.charging ? '充电中' : '使用中') : '无电池';
+
+  // v1.4 D：电池健康（无电池机器整行隐藏）
+  const bh = s.batteryHealth;
+  const bhCard = document.getElementById('battHealthCard');
+  bhCard.hidden = !bh;
+  if (bh) {
+    document.getElementById('battHealthBrief').textContent = `${bh.pct}% · 循环 ${bh.cycles} 次`;
+    const pctEl = document.getElementById('bhPct');
+    pctEl.textContent = bh.pct + '%';
+    pctEl.className = 'big-num ' + bh.level;
+    const condGood = /normal|正常/i.test(bh.condition);
+    document.getElementById('bhCond').textContent = bh.condition;
+    document.getElementById('bhCycles').textContent = bh.cycles + ' 次';
+    document.getElementById('bhWatt').textContent = bh.adapterWatt
+      ? `${bh.adapterWatt} W${bh.charging ? ' · 充电中' : ''}`
+      : '未接电源';
+    document.getElementById('bhHint').textContent = condGood
+      ? (bh.pct >= 80 ? '电池状态良好，无需处理' : '容量已下降，可留意续航变化')
+      : '系统建议检修这块电池，建议联系 Apple 售后';
+  }
 
   // S2：开机时长
   if (s.boot) {
@@ -1147,11 +1298,56 @@ document.querySelectorAll('.btn.reminder').forEach((btn) => {
   });
 });
 
-// 久坐提醒：每 45 分钟
-setInterval(() => {
-  api.notify('Mio · 久坐提醒', '已经坐了很久啦，起来活动一下');
-  say('起来走走吧～', 3500);
-}, 45 * 60 * 1000);
+// ============ v1.4 C：健康提醒中心 ============
+// 三个独立定时器会变成通知轰炸（久坐 + 喝水 + 护眼 + 番茄钟 + 建议 + 磁盘告警），
+// 这里统一调度：单一 1 分钟 tick + 任意两次提醒最小间隔 3 分钟
+const HEALTH_ITEMS = [
+  { key: 'sit',   period: 45 * 60 * 1000, title: 'Mio · 久坐提醒', body: '已经坐了很久啦，起来活动一下', say: '起来走走吧～' },
+  { key: 'water', period: 45 * 60 * 1000, title: 'Mio · 喝水提醒', body: '喝点水吧，顺便伸个懒腰', say: '该喝水啦～' },
+  { key: 'eye',   period: 20 * 60 * 1000, title: 'Mio · 护眼提醒', body: '看看 20 英尺外，让眼睛歇 20 秒', say: '让眼睛歇一会儿' },
+];
+const HEALTH_MIN_GAP = 3 * 60 * 1000;
+const healthLast = { sit: 0, water: 0, eye: 0 };
+let healthLastAny = 0;
+
+function healthTick() {
+  const h = settings.health;
+  if (!h.enabled) return;
+  if (inQuietHours(new Date().getHours())) return;
+  const now = Date.now();
+  if (now - healthLastAny < HEALTH_MIN_GAP) return; // 最小间隔：避免扎堆轰炸
+  // 到点的多项里只发「最久没提醒」的那一条，其余顺延到下一个 tick
+  const due = HEALTH_ITEMS
+    .filter((it) => h[it.key] && now - (healthLast[it.key] || 0) >= it.period)
+    .sort((a, b) => (healthLast[a.key] || 0) - (healthLast[b.key] || 0))[0];
+  if (!due) return;
+  healthLast[due.key] = now;
+  healthLastAny = now;
+  api.notify(due.title, due.body);
+  api.logMessage(due.title, due.body);
+  say(due.say, 3500);
+  setState('curious', 3000);
+}
+
+// 启动/开关变更后重置计时起点，避免刚开机就立刻提醒
+function resetHealthTimers() {
+  const now = Date.now();
+  HEALTH_ITEMS.forEach((it) => { healthLast[it.key] = now; });
+  healthLastAny = now;
+}
+resetHealthTimers();
+setInterval(healthTick, 60 * 1000);
+
+// ============ v1.4：设置开关绑定 + 初始化 ============
+bindSwitch('swLogin', 'login');
+bindSwitch('swChime', ['chime', 'enabled']);
+bindSwitch('swChimeNotify', ['chime', 'notify']);
+bindSwitch('swHealth', ['health', 'enabled']);
+bindSwitch('swSit', ['health', 'sit'], resetHealthTimers);
+bindSwitch('swWater', ['health', 'water'], resetHealthTimers);
+bindSwitch('swEye', ['health', 'eye'], resetHealthTimers);
+bindSwitch('swStealth', ['stealth', 'enabled']);
+loadSettings();
 
 // 启动问候
 setTimeout(() => say('嗨，我是 Mio'), 800);

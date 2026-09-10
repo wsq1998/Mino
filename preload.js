@@ -32,4 +32,10 @@ contextBridge.exposeInMainWorld('mio', {
   getCleanHistory: () => ipcRenderer.invoke('clean-history-get'),
   // 统一执行入口：用户勾选的具体路径移入废纸篓
   cleanPaths: (entries) => ipcRenderer.invoke('clean-paths', entries),
+  // ===== v1.4 新增 =====
+  // 设置读写（整点报时 / 健康提醒 / 隐身），主进程侧带默认值合并
+  getSettings: () => ipcRenderer.invoke('settings-get'),
+  setSettings: (patch) => ipcRenderer.invoke('settings-set', patch),
+  // 开机自启（以系统登录项为唯一真相）
+  setLoginItem: (enabled) => ipcRenderer.invoke('login-set', enabled),
 });

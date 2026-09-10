@@ -26,6 +26,43 @@ function saveState(patch) {
   try { fs.writeFileSync(stateFile, JSON.stringify(next)); } catch {}
 }
 
+// ============ v1.4：设置（含默认值，缺失字段自动补齐 → 老配置文件可直接升级）============
+const DEFAULT_SETTINGS = {
+  chime: { enabled: true, from: 9, to: 22, notify: false },
+  health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
+  stealth: { enabled: true },
+};
+
+function getSettings() {
+  const s = loadState().settings || {};
+  const merge = (k) => ({ ...DEFAULT_SETTINGS[k], ...(s[k] || {}) });
+  return { chime: merge('chime'), health: merge('health'), stealth: merge('stealth') };
+}
+
+// ============ v1.4 F：多显示器位置记忆 ============
+// 旧版只存一组全局 x/y，外接屏拔掉后窗口会落到所有屏幕之外。
+// 现按显示器 id 分别记忆，并做越界回退。
+function displayIdOf(x, y) {
+  try {
+    return String(screen.getDisplayNearestPoint({ x: Math.round(x), y: Math.round(y) }).id);
+  } catch { return '0'; }
+}
+
+// 窗口矩形与任一显示器有交集才算可见（只判左上角不够，窗口可能大半个在屏外）
+function rectVisibleOnAnyDisplay(x, y, w, h) {
+  try {
+    return screen.getAllDisplays().some((d) => {
+      const b = d.bounds;
+      return x < b.x + b.width && x + w > b.x && y < b.y + b.height && y + h > b.y;
+    });
+  } catch { return false; }
+}
+
+function defaultPosFor(display) {
+  const b = (display && (display.workArea || display.bounds)) || { x: 0, y: 0, width: 1440, height: 900 };
+  return { x: b.x + b.width - WIN_W - 40, y: b.y + b.height - WIN_H - 40 };
+}
+
 // 异步执行 shell 命令（扫描类重命令专用，防主进程阻塞）。
 // 无条件返回 stdout：du 等命令遇 TCC 保护目录会部分失败（exit 1），
 // 但 stdout 里已算出的有效行仍然可用，调用方按行解析并过滤空行，语义安全
@@ -39,9 +76,25 @@ function execP(cmd, opts = {}) {
 
 function createWindow() {
   const saved = loadState();
-  const display = screen.getPrimaryDisplay().workAreaSize;
-  const x = saved.x ?? display.width - WIN_W - 40;
-  const y = saved.y ?? display.height - WIN_H - 40;
+
+  // v1.4 F：优先落在光标所在那块屏，并按屏分别记忆位置
+  let targetDisplay = screen.getPrimaryDisplay();
+  try { targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || targetDisplay; } catch {}
+
+  const positions = { ...(saved.positions || {}) };
+  // 旧配置迁移：只有全局 x/y 时把它当作主屏记录，避免升级后位置跳变
+  const primaryId = String(screen.getPrimaryDisplay().id);
+  if (!positions[primaryId] && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    positions[primaryId] = { x: saved.x, y: saved.y };
+  }
+
+  let pos = positions[String(targetDisplay.id)];
+  if (!pos || !rectVisibleOnAnyDisplay(pos.x, pos.y, WIN_W, WIN_H)) {
+    pos = defaultPosFor(targetDisplay); // 首次或记录已越界 → 落到该屏右下角
+  }
+  // 迁移/首次结果即时落盘，避免每次启动重复推导
+  if (!saved.positions) saveState({ positions });
+  const { x, y } = pos;
 
   win = new BrowserWindow({
     width: WIN_W,
@@ -72,9 +125,12 @@ function createWindow() {
   // 默认点击穿透，悬停在可交互元素上时由渲染进程关闭
   win.setIgnoreMouseEvents(true, { forward: true });
 
+  // v1.4 F：按窗口中心所在显示器分别记忆位置
   win.on('moved', () => {
-    const [x, y] = win.getPosition();
-    saveState({ x, y });
+    const [mx, my] = win.getPosition();
+    const id = displayIdOf(mx + WIN_W / 2, my + WIN_H / 2);
+    const positions = { ...(loadState().positions || {}), [id]: { x: mx, y: my } };
+    saveState({ x: mx, y: my, positions }); // 仍写全局 x/y，向后兼容
   });
 
   // 全局光标轮询：让 Mio 的视线能跟随屏幕任意位置的鼠标
@@ -365,6 +421,40 @@ function netDetail() {
   return { ip, ssid, conns };
 }
 
+// ============ v1.4 D：电池健康（system_profiler，30 分钟缓存）============
+// 口径说明：AS 芯片上 ioreg 顶层 MaxCapacity 返回的是百分比、与系统显示对不上，
+// 这里改用 system_profiler 的官方口径（实测 0.12s，与「系统设置 → 电池」一致）
+let batteryHealthCache = { t: 0, data: null };
+
+function batteryHealth() {
+  if (batteryHealthCache.data && Date.now() - batteryHealthCache.t < 30 * 60 * 1000) {
+    return batteryHealthCache.data;
+  }
+  let data = null;
+  try {
+    const out = execSync('/usr/sbin/system_profiler SPPowerDataType 2>/dev/null', { timeout: 8000 }).toString();
+    const grab = (re) => { const m = out.match(re); return m ? m[1].trim() : null; };
+    const maxCap = grab(/Maximum Capacity:\s*(\d+)%/);
+    const cycles = grab(/Cycle Count:\s*(\d+)/);
+    const cond = grab(/Condition:\s*(\S+)/);
+    const watt = grab(/Wattage \(W\):\s*(\d+)/);
+    const charging = /Charging:\s*Yes/.test(out);
+    if (maxCap !== null && cycles !== null) {
+      const pct = parseInt(maxCap, 10);
+      data = {
+        pct,
+        cycles: parseInt(cycles, 10),
+        condition: cond || '未知',
+        adapterWatt: watt ? parseInt(watt, 10) : null,
+        charging,
+        level: pct >= 80 ? 'good' : pct >= 60 ? 'warn' : 'bad',
+      };
+    }
+  } catch {}
+  batteryHealthCache = { t: Date.now(), data }; // 无电池机器缓存 null，避免反复调用
+  return data;
+}
+
 ipcMain.handle('system-full', () => {
   const cpus = os.cpus();
   const load = os.loadavg()[0] / cpus.length;
@@ -378,6 +468,7 @@ ipcMain.handle('system-full', () => {
     disk: diskInfo(),
     net: netRate(),
     battery: batteryInfo(),
+    batteryHealth: batteryHealth(), // v1.4 D：无电池时为 null，渲染层整行隐藏
     top: topProcesses(), // v1.2 S4：Top10 + pid
   };
 });
@@ -858,9 +949,84 @@ ipcMain.on('notify', (_e, { title, body }) => {
 
 ipcMain.on('quit', () => app.quit());
 
+// ============ v1.4 E：前台应用智能隐身 ============
+// 真正的「检测全屏」要读 AXFullScreen，需要辅助功能权限 —— 本批次不引入权限，
+// 改用「前台应用 bundleid 名单」近似，并配 ⌥H 手动兜底。UI 文案也如实叫「看视频/演示时自动隐身」。
+const STEALTH_APPS = [
+  'com.colliderli.iina',           // IINA
+  'org.videolan.vlc',              // VLC
+  'com.apple.QuickTimePlayerX',    // QuickTime Player
+  'com.apple.TV',                  // 系统「视频」
+  'com.apple.iWork.Keynote',       // Keynote
+  'com.microsoft.Powerpoint',      // PowerPoint
+  'com.kingsoft.wpsoffice.mac',    // WPS
+  'com.tencent.meeting',           // 腾讯会议
+  'com.tencent.tencentmeeting',    // 腾讯会议（备用 id）
+  'us.zoom.xos',                   // Zoom
+  'com.electron.lark',             // 飞书
+  'com.alibaba.dingtalk.mac',      // 钉钉
+];
+
+let stealthTimer = null;
+let stealthActive = false;
+
+function frontBundleId() {
+  try {
+    const asn = execSync('/usr/bin/lsappinfo front 2>/dev/null', { timeout: 1500 }).toString().trim();
+    if (!asn) return null;
+    const out = execSync(`/usr/bin/lsappinfo info -only bundleid ${asn} 2>/dev/null`, { timeout: 1500 }).toString();
+    const m = out.match(/"CFBundleIdentifier"="([^"]+)"/);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
+// 淡出而非隐藏：保留一丝存在感，鼠标移过去还能交互唤回
+function applyStealth(on) {
+  if (!win || win.isDestroyed() || on === stealthActive) return;
+  stealthActive = on;
+  try { win.setOpacity(on ? 0.12 : (loadState().opacity ?? 1)); } catch {}
+}
+
+function stealthTick() {
+  if (!getSettings().stealth.enabled) { applyStealth(false); return; }
+  const id = frontBundleId();
+  applyStealth(!!id && STEALTH_APPS.includes(id));
+}
+
+const readLoginItem = () => { try { return app.getLoginItemSettings().openAtLogin; } catch { return false; } };
+
+ipcMain.handle('settings-get', () => ({
+  ...getSettings(),
+  isPackaged: app.isPackaged,
+  loginItem: readLoginItem(),
+  stealthApps: STEALTH_APPS,
+  stealthActive,
+}));
+
+ipcMain.handle('settings-set', (_e, patch) => {
+  const next = { ...getSettings(), ...(patch || {}) };
+  saveState({ settings: next });
+  if (next.stealth && next.stealth.enabled === false) applyStealth(false);
+  return { ...next, loginItem: readLoginItem() };
+});
+
+// v1.4 A：开机自启。以系统登录项为唯一真相，不额外落盘，避免两边不一致
+ipcMain.handle('login-set', (_e, enabled) => {
+  if (!app.isPackaged) return { ok: false, error: '开发模式不支持，打包后可用' };
+  try {
+    app.setLoginItemSettings({ openAtLogin: !!enabled, openAsHidden: false });
+    return { ok: true, openAtLogin: readLoginItem() };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 app.whenReady().then(() => {
   createWindow();
   globalShortcut.register('Alt+Space', toggleWindow);
+  globalShortcut.register('Alt+H', toggleWindow); // v1.4 E：手动隐藏兜底
+  // v1.4 E：前台应用探测（实测 8.5ms/次，2s 一次成本可忽略）
+  stealthTimer = setInterval(stealthTick, 2000);
 
   // v1.2 S5：启动 24h 采样器（面板收起也维持 30s 不变）
   sampleOnce();
@@ -958,9 +1124,68 @@ app.whenReady().then(() => {
         })()`);
         log('V13_SELECTALL: ' + selAll);
 
+        // ===== v1.4 断言 =====
+        log('V14_SETTINGS: ' + await js(`window.mio.getSettings().then(s => JSON.stringify({
+          chime: s.chime && s.chime.enabled, from: s.chime && s.chime.from, to: s.chime && s.chime.to,
+          health: s.health && [s.health.sit, s.health.water, s.health.eye].join('/'),
+          quiet: s.health && (s.health.quietFrom + '-' + s.health.quietTo),
+          stealth: s.stealth && s.stealth.enabled,
+          isPackaged: s.isPackaged, loginItem: s.loginItem,
+          stealthApps: (s.stealthApps || []).length
+        }))`));
+        log('V14_BATT: ' + await js(`window.mio.getFullStats().then(s => JSON.stringify({
+          has: !!s.batteryHealth,
+          pct: s.batteryHealth && s.batteryHealth.pct,
+          cycles: s.batteryHealth && s.batteryHealth.cycles,
+          level: s.batteryHealth && s.batteryHealth.level,
+          cond: s.batteryHealth && s.batteryHealth.condition,
+          watt: s.batteryHealth && s.batteryHealth.adapterWatt
+        }))`));
+
+        // 设置面板：钻入 → 开关渲染 → 返回
+        await js(`document.querySelector('[data-tab="home"]').click()`);
+        await sleep(300);
+        await js(`document.getElementById('settingsCard').click()`);
+        await sleep(700);
+        log('V14_SETUI: ' + await js(`JSON.stringify({
+          dvOpen: !document.getElementById('detailView').hidden,
+          title: document.getElementById('dvTitle').textContent,
+          switches: document.querySelectorAll('#dvBody .switch input').length,
+          chimeRange: document.getElementById('chimeRange').textContent,
+          quietRange: document.getElementById('quietRange').textContent,
+          loginDisabled: document.getElementById('swLogin').disabled,
+          brief: document.getElementById('settingsBrief').textContent
+        })`));
+        await shot('electron-v14-settings.png');
+        await js(`document.getElementById('dvBack').click()`);
+        await sleep(500);
+        log('V14_SETTINGS_BACK: ' + await js(`JSON.stringify({ dvHidden: document.getElementById('detailView').hidden })`));
+
+        // 设置往返：切一次健康提醒总开关，确认能写回主进程
+        log('V14_SET_ROUNDTRIP: ' + await js(`(async () => {
+          const before = (await window.mio.getSettings()).health.enabled;
+          const r = await window.mio.setSettings({ health: Object.assign({}, (await window.mio.getSettings()).health, { enabled: !before }) });
+          const after = r.health.enabled;
+          await window.mio.setSettings({ health: Object.assign({}, r.health, { enabled: before }) });
+          return JSON.stringify({ before, after, restored: (await window.mio.getSettings()).health.enabled });
+        })()`));
+
+        // 电池健康卡渲染（切到状态页后刷新）
+        await js(`document.querySelector('[data-tab="status"]').click()`);
+        await sleep(1500);
+        log('V14_BATTCARD: ' + await js(`JSON.stringify({
+          hidden: document.getElementById('battHealthCard').hidden,
+          brief: document.getElementById('battHealthBrief').textContent,
+          cls: document.getElementById('bhPct').className,
+          cond: document.getElementById('bhCond').textContent
+        })`));
+        await shot('electron-v14-status.png');
+
         log('AUTOTEST_DONE');
+        setTimeout(() => app.quit(), 600); // 自检跑完自动退出，便于脚本化
       } catch (e) {
         log('AUTOTEST_FAIL: ' + e.message);
+        setTimeout(() => app.quit(), 600);
       }
     });
   }
@@ -970,6 +1195,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   if (cursorTimer) clearInterval(cursorTimer);
   if (samplerTimer) clearInterval(samplerTimer);
+  if (stealthTimer) clearInterval(stealthTimer);
 });
 
 // 桌宠不需要 dock 图标与多窗口

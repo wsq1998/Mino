@@ -50,6 +50,31 @@
         </div>
         <div id="reminderInfo" class="sub">久坐提醒：每 45 分钟</div>
       </div>
+      <!-- v1.4：设置（钻入式详情页） -->
+      <div class="card expandable interactive-btn" id="settingsCard" data-dv-title="Mio 设置">
+        <div class="label">Mio 设置 <span class="expand-hint">展开</span></div>
+        <div id="settingsBrief" class="sub">开机自启 · 提醒 · 隐身</div>
+        <div class="detail">
+          <div class="set-group">通用</div>
+          <div class="set-row"><span>开机自启动</span><label class="switch"><input type="checkbox" id="swLogin"><i></i></label></div>
+          <div class="set-note" id="loginHint"></div>
+
+          <div class="set-group">提醒</div>
+          <div class="set-row"><span>整点报时</span><label class="switch"><input type="checkbox" id="swChime"><i></i></label></div>
+          <div class="set-row"><span>报时时段</span><span class="set-val" id="chimeRange">09:00 — 22:00</span></div>
+          <div class="set-row"><span>整点同时发系统通知</span><label class="switch"><input type="checkbox" id="swChimeNotify"><i></i></label></div>
+          <div class="set-row"><span>健康提醒</span><label class="switch"><input type="checkbox" id="swHealth"><i></i></label></div>
+          <div class="set-row indent"><span>久坐（每 45 分钟）</span><label class="switch"><input type="checkbox" id="swSit"><i></i></label></div>
+          <div class="set-row indent"><span>喝水（每 45 分钟）</span><label class="switch"><input type="checkbox" id="swWater"><i></i></label></div>
+          <div class="set-row indent"><span>护眼（每 20 分钟）</span><label class="switch"><input type="checkbox" id="swEye"><i></i></label></div>
+          <div class="set-row"><span>免打扰时段</span><span class="set-val" id="quietRange">22:00 — 09:00</span></div>
+
+          <div class="set-group">隐身</div>
+          <div class="set-row"><span>看视频 / 演示时自动隐身</span><label class="switch"><input type="checkbox" id="swStealth"><i></i></label></div>
+          <div class="set-note">已收录：IINA · VLC · QuickTime · 视频 · Keynote · PowerPoint · WPS · 腾讯会议 · Zoom · 飞书 · 钉钉<br>隐身时球体淡化到 12%，鼠标移上去即可交互唤回</div>
+          <div class="set-note">全屏游戏等无法枚举的场景，用快捷键 <b>⌥ H</b> 手动隐藏 / 显示</div>
+        </div>
+      </div>
     </div>
 
     <!-- 状态 -->
@@ -93,6 +118,18 @@
           <div class="label">电池</div>
           <div id="battVal" class="value small">—</div>
           <div id="battState" class="sub">—</div>
+        </div>
+      </div>
+      <!-- v1.4 D：电池健康（无电池机器自动隐藏） -->
+      <div class="card expandable interactive-btn" id="battHealthCard" data-dv-title="电池健康" hidden>
+        <div class="label">电池健康 <span class="expand-hint">展开</span></div>
+        <div id="battHealthBrief" class="value small">—</div>
+        <div class="detail">
+          <div id="bhPct" class="big-num">—</div>
+          <div class="kv"><span>状态</span><span id="bhCond">—</span></div>
+          <div class="kv"><span>循环次数</span><span id="bhCycles">—</span></div>
+          <div class="kv"><span>电源适配器</span><span id="bhWatt">—</span></div>
+          <div class="sub" id="bhHint">—</div>
         </div>
       </div>
       <!-- S4：Top10 进程（排序切换 + 结束进程） -->
