@@ -1,0 +1,12 @@
+# 依赖与产物
+node_modules/
+dist/
+.electron-cache/
+build/icon.iconset/
+
+# 本地截图（桌面粉图含隐私，不入库）
+docs/shots/desktop-live.png
+*.log
+
+# 系统
+.DS_Store

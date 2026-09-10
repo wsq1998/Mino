@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { margin: 0; }
+  html, body { width: 1024px; height: 1024px; background: transparent; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  .orb {
+    width: 880px; height: 880px; border-radius: 50%;
+    background:
+      radial-gradient(circle at 32% 26%, rgba(255,255,255,0.16), rgba(255,255,255,0) 42%),
+      linear-gradient(160deg, #2E3039 0%, #26282F 45%, #1B1D23 100%);
+    border: 8px solid rgba(133, 183, 235, 0.85);
+    box-shadow:
+      inset 0 -100px 200px rgba(0, 0, 0, 0.55),
+      inset 0 70px 160px rgba(133, 183, 235, 0.12);
+    position: relative;
+  }
+  .highlight {
+    position: absolute; top: 12%; left: 17%;
+    width: 34%; height: 14%;
+    border-radius: 50%;
+    background: linear-gradient(180deg, rgba(255,255,255,0.34), rgba(255,255,255,0));
+    filter: blur(6px);
+    transform: rotate(-16deg);
+  }
+  .eye {
+    position: absolute; top: 37%;
+    width: 132px; height: 176px; border-radius: 66px;
+    background: #B5D4F4;
+    box-shadow: 0 0 60px rgba(181, 212, 244, 0.9), 0 0 140px rgba(133, 183, 235, 0.5);
+  }
+  .eye-l { left: 25%; }
+  .eye-r { right: 25%; }
+  .pupil {
+    position: absolute; top: 28%; left: 27%;
+    width: 46%; height: 44%;
+    border-radius: 40%;
+    background: #0C447C;
+  }
+</style>
+</head>
+<body>
+  <div class="orb">
+    <div class="highlight"></div>
+    <div class="eye eye-l"><div class="pupil"></div></div>
+    <div class="eye eye-r"><div class="pupil"></div></div>
+  </div>
+</body>
+</html>

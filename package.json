@@ -1,0 +1,38 @@
+{
+  "name": "mio-desktop-pet",
+  "version": "1.0.0",
+  "description": "Mio - macOS desktop companion robot",
+  "main": "main.js",
+  "author": "Kaven",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "pack": "electron-builder --mac --dir",
+    "dist": "electron-builder --mac dmg zip"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.kaven.mio",
+    "productName": "Mio",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "icon": "build/icon.png",
+      "extendInfo": { "LSUIElement": true },
+      "target": ["dmg", "zip"]
+    },
+    "dmg": {
+      "title": "Mio",
+      "window": { "width": 480, "height": 320 }
+    }
+  }
+}

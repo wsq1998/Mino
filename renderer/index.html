@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Mio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 快捷面板 -->
+  <div id="panel" class="panel interactive" hidden>
+    <div class="tabs">
+      <button class="tab active" data-tab="home">常用</button>
+      <button class="tab" data-tab="status">状态</button>
+      <button class="tab" data-tab="clean">清理</button>
+    </div>
+    <div class="panel-scroll" id="panelScroll">
+
+    <!-- 常用 -->
+    <div class="tab-page" id="page-home">
+      <!-- A1：主动建议卡片（最多 1 条，可关闭） -->
+      <div id="adviceCard" class="card advice-card" hidden>
+        <div class="label">💡 Mio 建议 <span id="adviceClose" class="advice-close">✕</span></div>
+        <div id="adviceText" class="value small">—</div>
+        <div id="adviceDetail" class="sub">—</div>
+        <button class="btn wide" id="adviceBtn">去看看</button>
+      </div>
+      <div class="card time-card">
+        <div class="label">现在</div>
+        <div id="clock" class="clock">--:--</div>
+        <div id="dateLine" class="sub">—</div>
+      </div>
+      <div class="row">
+        <div class="card half interactive-btn" id="pomodoroCard">
+          <div class="label">番茄钟 <span id="pomoDot" class="dot"></span></div>
+          <div id="pomoTime" class="value">25:00</div>
+          <div id="pomoState" class="sub">点击开始专注</div>
+        </div>
+        <div class="card half">
+          <div class="label">速览</div>
+          <div id="quickStats" class="value small">—</div>
+          <div class="sub">CPU · 内存</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="label">快捷提醒</div>
+        <div class="reminder-row">
+          <button class="btn reminder" data-min="10">10 分钟</button>
+          <button class="btn reminder" data-min="30">30 分钟</button>
+          <button class="btn reminder" data-min="60">1 小时</button>
+        </div>
+        <div id="reminderInfo" class="sub">久坐提醒：每 45 分钟</div>
+      </div>
+    </div>
+
+    <!-- 状态 -->
+    <div class="tab-page" id="page-status" hidden>
+      <!-- S2：开机时长 -->
+      <div class="boot-line" id="bootLine">开机 —</div>
+      <div class="card">
+        <div class="metric"><span class="m-name">CPU</span><div class="bar"><div id="barCpu" class="bar-fill"></div></div><span id="valCpu" class="m-val">—</span></div>
+        <div class="metric"><span class="m-name">内存</span><div class="bar"><div id="barMem" class="bar-fill"></div></div><span id="valMem" class="m-val">—</span></div>
+        <div class="metric"><span class="m-name">磁盘</span><div class="bar"><div id="barDisk" class="bar-fill"></div></div><span id="valDisk" class="m-val">—</span></div>
+        <canvas id="spark" width="216" height="36"></canvas>
+      </div>
+      <!-- S1：内存细分（点击展开详情档） -->
+      <div class="card expandable interactive-btn" id="memCard" data-dv-title="内存细分">
+        <div class="label">内存细分 <span class="expand-hint">点击展开</span></div>
+        <div id="memBrief" class="value small">—</div>
+        <div class="detail">
+          <div class="stackbar" id="memStack">
+            <div class="seg seg-app" id="segApp"></div><div class="seg seg-wired" id="segWired"></div><div class="seg seg-comp" id="segComp"></div><div class="seg seg-avail" id="segAvail"></div>
+          </div>
+          <div class="legend"><span class="lg-dot seg-app-bg"></span>App 内存<span class="lg-val" id="lgApp">—</span></div>
+          <div class="legend"><span class="lg-dot seg-wired-bg"></span>Wired<span class="lg-val" id="lgWired">—</span></div>
+          <div class="legend"><span class="lg-dot seg-comp-bg"></span>压缩<span class="lg-val" id="lgComp">—</span></div>
+          <div class="legend"><span class="lg-dot seg-avail-bg"></span>可用<span class="lg-val" id="lgAvail">—</span></div>
+          <div class="sub" id="memPressure">压力等级：—</div>
+        </div>
+      </div>
+      <div class="row">
+        <!-- S3：网络详情（点击展开） -->
+        <div class="card half expandable interactive-btn" id="netCard">
+          <div class="label">网络 <span class="expand-hint">展开</span></div>
+          <div id="netDown" class="value small">↓ —</div>
+          <div id="netUp" class="sub">↑ —</div>
+          <div class="detail">
+            <div class="kv"><span>IP</span><span id="netIp">—</span></div>
+            <div class="kv"><span>WiFi</span><span id="netSsid">—</span></div>
+            <div class="kv"><span>连接数</span><span id="netConns">—</span></div>
+          </div>
+        </div>
+        <div class="card half">
+          <div class="label">电池</div>
+          <div id="battVal" class="value small">—</div>
+          <div id="battState" class="sub">—</div>
+        </div>
+      </div>
+      <!-- S4：Top10 进程（排序切换 + 结束进程） -->
+      <div class="card expandable interactive-btn" id="procCard" data-dv-title="占用的进程">
+        <div class="label">占用最高
+          <span class="sort-toggle" id="procSortCpu">CPU</span>
+          <span class="sort-toggle" id="procSortMem">内存</span>
+        </div>
+        <div id="topProcs" class="procs">—</div>
+      </div>
+      <!-- S5：24h 趋势 + 今日峰值 -->
+      <div class="card">
+        <div class="label">24 小时趋势</div>
+        <canvas id="spark24" width="216" height="40"></canvas>
+        <div id="peakLine" class="sub">今日峰值 —</div>
+      </div>
+      <!-- S6：消息中心 -->
+      <div class="card expandable interactive-btn" id="msgCard" data-dv-title="消息">
+        <div class="label">消息 <span id="msgDot" class="unread-dot" hidden></span><span id="msgCount" class="sub-inline"></span><span class="expand-hint">展开</span></div>
+        <div class="detail">
+          <div id="msgList" class="msg-list">暂无消息</div>
+          <button class="btn wide" id="msgClearBtn">清空消息</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 清理 -->
+    <div class="tab-page" id="page-clean" hidden>
+      <div class="card">
+        <div class="label">系统清理 <span class="safe-badge">仅移入废纸篓</span></div>
+        <div id="cleanSummary" class="sub">扫描后可查看可释放空间</div>
+        <button class="btn wide" id="scanBtn">开始扫描</button>
+      </div>
+      <!-- C4：智能建议 -->
+      <div id="cleanAdvice"></div>
+      <!-- C1：大文件猎人 -->
+      <div class="card expandable interactive-btn" id="bigFilesCard" data-dv-title="大文件猎人">
+        <div class="label">大文件猎人 <span class="expand-hint">&gt;500MB · Top20</span></div>
+        <div id="bigFilesSummary" class="sub">定位用户目录下的大文件</div>
+        <div class="detail">
+          <div id="bigFilesList" class="pick-list"></div>
+          <button class="btn danger wide" id="bigFilesBtn" hidden>清理选中</button>
+        </div>
+      </div>
+      <!-- C2：按 App 缓存排行 -->
+      <div class="card expandable interactive-btn" id="cacheRankCard" data-dv-title="缓存排行">
+        <div class="label">缓存排行 <span class="expand-hint">Top10</span></div>
+        <div id="cacheRankSummary" class="sub">看看哪个 App 最占缓存</div>
+        <div class="detail">
+          <div id="cacheRankList" class="pick-list"></div>
+          <button class="btn danger wide" id="cacheRankBtn" hidden>清理选中</button>
+        </div>
+      </div>
+      <!-- C3：应用残留 -->
+      <div class="card expandable interactive-btn" id="leftoverCard" data-dv-title="应用残留">
+        <div class="label">应用残留 <span class="expand-hint">孤儿目录</span></div>
+        <div id="leftoverSummary" class="sub">已删除 App 留下的支持文件</div>
+        <div class="detail">
+          <div id="leftoverList" class="pick-list"></div>
+          <button class="btn danger wide" id="leftoverBtn" hidden>清理选中</button>
+        </div>
+      </div>
+      <div id="cleanList" class="clean-list"></div>
+      <div id="cleanActions" hidden>
+        <button class="btn danger wide" id="cleanBtn">清理选中</button>
+        <div id="cleanResult" class="sub"></div>
+      </div>
+      <!-- C5：清理历史 & 释放统计 -->
+      <div class="card expandable interactive-btn" id="cleanHistCard" data-dv-title="清理记录">
+        <div class="label">清理记录 <span class="expand-hint">展开</span></div>
+        <div id="cleanHistSummary" class="sub">—</div>
+        <div class="detail">
+          <div id="cleanHistList" class="msg-list"></div>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <!-- 钻入式详情页：卡片内容在这里单面板显示，替代内联撑开 -->
+    <div id="detailView" class="detail-view" hidden>
+      <div class="dv-head">
+        <button class="dv-back" id="dvBack">‹ 返回</button>
+        <span class="dv-title" id="dvTitle"></span>
+      </div>
+      <div class="dv-body" id="dvBody"></div>
+    </div>
+  </div>
+
+  <!-- 通用确认弹层（黄队二次确认 / 结束进程确认） -->
+  <div id="confirmOverlay" class="confirm-overlay interactive" hidden>
+    <div class="confirm-box">
+      <div id="confirmTitle" class="confirm-title"></div>
+      <div id="confirmBody" class="confirm-body"></div>
+      <div class="confirm-btns">
+        <button class="btn" id="confirmCancel">取消</button>
+        <button class="btn danger" id="confirmOk">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 机器人本体 -->
+  <div id="mio" class="mio mio--idle interactive" title="Mio">
+    <div class="orb">
+      <div class="highlight"></div>
+      <div class="sweat"></div>
+      <div class="face">
+        <div class="eye eye-l"><div class="pupil"></div></div>
+        <div class="eye eye-r"><div class="pupil"></div></div>
+        <div class="mouth"></div>
+      </div>
+    </div>
+    <div class="bubble" id="bubble" hidden></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
