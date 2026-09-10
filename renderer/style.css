@@ -186,6 +186,10 @@ body {
 }
 .panel.wide { width: 360px; }
 
+/* 宽档（详情页 / 设置页）把纵向空间用满：窗口 560 = 面板 416 + 球体 120 + 底距 24 */
+.panel.wide { max-height: 416px; }
+.panel.wide .panel-scroll { max-height: 394px; }
+
 /* 内容滚动区（外壳负责圆角/渐隐，内容区独立滚动） */
 .panel-scroll {
   max-height: 374px;
@@ -919,4 +923,137 @@ body {
   line-height: 1.7;
   padding: 8px 2px 2px;
   text-align: center;
+}
+
+/* ---- 分段控件（球体尺寸这类三选一） ---- */
+.seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(38, 40, 47, 0.75);
+  flex-shrink: 0;
+}
+.seg button {
+  min-width: 30px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: #888A92;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.seg button:hover { color: #D5D7DC; }
+.seg button.on {
+  color: #EDEDF0;
+  background: rgba(133, 183, 235, 0.24);
+}
+
+/* ---- 滑块 ---- */
+.srange {
+  display: block;
+  width: 100%;
+  height: 18px;
+  margin: 0 0 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.srange::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.srange::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: #B5D4F4;
+  box-shadow: 0 0 8px rgba(133, 183, 235, 0.5);
+  transition: transform 0.15s;
+}
+.srange:active::-webkit-slider-thumb { transform: scale(1.18); }
+
+/* ---- 下拉 ---- */
+.sselect {
+  max-width: 168px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  color: #D5D7DC;
+  background: rgba(38, 40, 47, 0.75);
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  outline: none;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.sselect option { background: #26282F; color: #EDEDF0; }
+
+/* ---- 隐身名单 ---- */
+.stealth-list { margin: 2px 0 6px; }
+.sl-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  margin-bottom: 3px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 11px;
+}
+.sl-name { color: #D5D7DC; flex-shrink: 0; }
+.sl-id {
+  flex: 1;
+  min-width: 0;
+  color: #55575F;
+  font-size: 9.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sl-del {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: #66686F;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.16s;
+}
+.sl-del:hover { color: #F09595; background: rgba(216, 90, 48, 0.18); }
+
+.stealth-actions { display: flex; gap: 6px; margin: 2px 0 6px; }
+.btn.tiny {
+  flex: 1;
+  padding: 5px 0;
+  font-size: 11px;
+  font-family: inherit;
+  color: #B5D4F4;
+  background: rgba(133, 183, 235, 0.14);
+  border: 0.5px solid rgba(133, 183, 235, 0.28);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.btn.tiny:hover { background: rgba(133, 183, 235, 0.24); }
+
+/* ---- 减弱动效：尊重无障碍偏好，同时省电 ---- */
+body.reduce-motion *,
+body.reduce-motion *::before,
+body.reduce-motion *::after {
+  animation: none !important;
+  transition: none !important;
 }

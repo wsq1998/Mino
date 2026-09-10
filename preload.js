@@ -38,4 +38,9 @@ contextBridge.exposeInMainWorld('mio', {
   setSettings: (patch) => ipcRenderer.invoke('settings-set', patch),
   // 开机自启（以系统登录项为唯一真相）
   setLoginItem: (enabled) => ipcRenderer.invoke('login-set', enabled),
+  // ===== v1.5 新增 =====
+  // 可选显示器清单（设置页「显示在哪块屏幕」）
+  getDisplays: () => ipcRenderer.invoke('displays-list'),
+  // 把最近一次识别到的非 Mio 前台应用加入隐身名单
+  stealthCapture: () => ipcRenderer.invoke('stealth-capture'),
 });

@@ -198,6 +198,25 @@
         </div>
       </details>
 
+      <details class="sgroup" data-group="appearance" open>
+        <summary class="sgroup-h"><span class="sg-name">外观与主题</span><span class="sg-brief" id="sgBrief-appearance"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>球体尺寸</span>
+            <div class="seg" id="segSize">
+              <button data-v="sm">小</button><button data-v="md">中</button><button data-v="lg">大</button>
+            </div>
+          </div>
+          <div class="set-row"><span>不透明度</span><span class="set-val" id="opacityVal">100%</span></div>
+          <input type="range" id="rngOpacity" class="srange" min="40" max="100" step="5" value="100">
+          <div class="set-row"><span>始终置顶</span><label class="switch"><input type="checkbox" id="swOnTop"><i></i></label></div>
+          <div class="set-row"><span>视线跟随光标</span><label class="switch"><input type="checkbox" id="swGaze"><i></i></label></div>
+          <div class="set-row"><span>点击穿透</span><label class="switch"><input type="checkbox" id="swClickThrough"><i></i></label></div>
+          <div class="set-row"><span>减弱动效</span><label class="switch"><input type="checkbox" id="swReduceMotion"><i></i></label></div>
+          <div class="set-row"><span>显示在哪块屏幕</span><select id="selDisplay" class="sselect"></select></div>
+          <div class="set-note">点击穿透开启时球体不抢鼠标点击；关闭后球体始终接收鼠标事件（透明度与置顶在右键菜单里也能改）</div>
+        </div>
+      </details>
+
       <details class="sgroup" data-group="notify" open>
         <summary class="sgroup-h"><span class="sg-name">提醒与通知</span><span class="sg-brief" id="sgBrief-notify"></span></summary>
         <div class="sgroup-b">
@@ -217,8 +236,16 @@
         <summary class="sgroup-h"><span class="sg-name">隐身</span><span class="sg-brief" id="sgBrief-stealth"></span></summary>
         <div class="sgroup-b">
           <div class="set-row"><span>看视频 / 演示时自动隐身</span><label class="switch"><input type="checkbox" id="swStealth"><i></i></label></div>
-          <div class="set-note">隐身时球体淡化，鼠标移上去即可交互唤回</div>
-          <div class="set-note" id="stealthAppsNote">已收录：—</div>
+          <div class="set-row"><span>隐身时的不透明度</span><span class="set-val" id="stealthOpacityVal">12%</span></div>
+          <input type="range" id="rngStealthOpacity" class="srange" min="0" max="60" step="2" value="12">
+          <div class="set-note">隐身时球体淡化到这个程度，鼠标移上去即可交互唤回</div>
+          <div class="set-note" id="stealthAppsNote">—</div>
+          <div class="stealth-list" id="stealthList"></div>
+          <div class="stealth-actions">
+            <button class="btn tiny" id="stealthAdd">添加当前前台应用</button>
+            <button class="btn tiny" id="stealthReset">恢复默认</button>
+          </div>
+          <div class="set-note" id="stealthHint">先把目标 App 切到前台，再回到这里点「添加」</div>
           <div class="set-row"><span>全屏游戏等无法枚举的场景</span><span class="set-val">用 <b>⌥ H</b> 手动隐藏</span></div>
         </div>
       </details>

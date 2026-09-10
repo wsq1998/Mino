@@ -37,9 +37,10 @@ const DEFAULT_SETTINGS = {
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
     size: 'md',           // sm | md | lg
-    opacity: 1,           // 0.4 ~ 1
+    opacity: 1,           // 0.3 ~ 1
     onTop: true,
     gaze: true,           // 视线跟随
+    clickThrough: true,   // 点击穿透（关闭后球体始终接收鼠标事件）
     reduceMotion: false,  // 减弱动效
     displayId: null,      // null = 跟随光标所在屏
   },
@@ -64,9 +65,50 @@ function deepMerge(base, patch) {
 }
 
 function getSettings() {
-  const s = deepMerge(DEFAULT_SETTINGS, loadState().settings || {});
+  const st = loadState();
+  const saved = st.settings || {};
+  const s = deepMerge(DEFAULT_SETTINGS, saved);
+  // v1.5 迁移：v1.4 把透明度/置顶存在状态根部（右键菜单写入），搬进 appearance。
+  // 只在用户「没在设置里动过」时生效，所以一旦 settings.appearance 有了这两个键就不再覆盖。
+  const had = saved.appearance || {};
+  if (!('opacity' in had) && typeof st.opacity === 'number') s.appearance.opacity = st.opacity;
+  if (!('onTop' in had) && typeof st.alwaysOnTop === 'boolean') s.appearance.onTop = st.alwaysOnTop;
   s._v = SETTINGS_VERSION;
   return s;
+}
+
+// 写设置：deepMerge 后落盘，返回合并结果
+function patchSettings(patch) {
+  const next = deepMerge(getSettings(), patch || {});
+  saveState({ settings: next });
+  return next;
+}
+
+// ============ v1.5 B：外观与主题 ============
+// 球体尺寸用 zoom 系数，基准 120px —— 表情各状态里写死了大量 px 尺寸，
+// 逐个改成 calc() 侵入太大，zoom 能整体等比缩放且仍然参与布局。
+const ORB_ZOOM = { sm: 0.8, md: 1, lg: 1.13 };
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+// 窗口级外观：透明度 / 置顶 / 所在显示器。尺寸与主题是纯渲染层的事，不在这里动。
+function applyAppearance(a) {
+  if (!win || win.isDestroyed()) return;
+  const ap = a || getSettings().appearance;
+  try {
+    if (!stealthActive) win.setOpacity(clamp(Number(ap.opacity) || 1, 0.3, 1));
+    win.setAlwaysOnTop(!!ap.onTop, 'floating');
+  } catch {}
+}
+
+function moveToDisplay(displayId) {
+  if (!win || win.isDestroyed() || displayId == null) return;
+  const d = screen.getAllDisplays().find((x) => String(x.id) === String(displayId));
+  if (!d) return;
+  const remembered = (loadState().positions || {})[String(d.id)];
+  const fallback = defaultPosFor(d);
+  const pos = remembered && rectVisibleOnAnyDisplay(remembered.x, remembered.y, WIN_W, WIN_H)
+    ? remembered : fallback;
+  try { win.setPosition(Math.round(pos.x), Math.round(pos.y)); } catch {}
 }
 
 // ============ v1.4 F：多显示器位置记忆 ============
@@ -108,8 +150,14 @@ function createWindow() {
   const saved = loadState();
 
   // v1.4 F：优先落在光标所在那块屏，并按屏分别记忆位置
+  // v1.5：若用户在设置里指定了屏幕，则以指定屏为准
+  const appearance = getSettings().appearance;
   let targetDisplay = screen.getPrimaryDisplay();
-  try { targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || targetDisplay; } catch {}
+  if (appearance.displayId) {
+    targetDisplay = screen.getAllDisplays().find((d) => String(d.id) === String(appearance.displayId)) || targetDisplay;
+  } else {
+    try { targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || targetDisplay; } catch {}
+  }
 
   const positions = { ...(saved.positions || {}) };
   // 旧配置迁移：只有全局 x/y 时把它当作主屏记录，避免升级后位置跳变
@@ -133,7 +181,7 @@ function createWindow() {
     frame: false,
     transparent: true,
     resizable: false,
-    alwaysOnTop: saved.alwaysOnTop ?? true,
+    alwaysOnTop: appearance.onTop,
     skipTaskbar: true,
     hasShadow: false,
     fullscreenable: false,
@@ -148,9 +196,8 @@ function createWindow() {
   });
 
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  win.setAlwaysOnTop(saved.alwaysOnTop ?? true, 'floating');
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  win.setOpacity(saved.opacity ?? 1);
+  applyAppearance(appearance);
 
   // 默认点击穿透，悬停在可交互元素上时由渲染进程关闭
   win.setIgnoreMouseEvents(true, { forward: true });
@@ -175,15 +222,15 @@ function createWindow() {
 }
 
 function showContextMenu() {
-  const saved = loadState();
+  const ap = getSettings().appearance;
   const menu = Menu.buildFromTemplate([
     {
       label: '始终置顶',
       type: 'checkbox',
-      checked: saved.alwaysOnTop ?? true,
+      checked: !!ap.onTop,
       click: (item) => {
-        win.setAlwaysOnTop(item.checked, 'floating');
-        saveState({ alwaysOnTop: item.checked });
+        patchSettings({ appearance: { onTop: item.checked } });
+        applyAppearance();
       },
     },
     {
@@ -191,8 +238,11 @@ function showContextMenu() {
       submenu: [1, 0.8, 0.6].map((v) => ({
         label: `${v * 100}%`,
         type: 'radio',
-        checked: (saved.opacity ?? 1) === v,
-        click: () => { win.setOpacity(v); saveState({ opacity: v }); },
+        checked: ap.opacity === v,
+        click: () => {
+          patchSettings({ appearance: { opacity: v } });
+          applyAppearance();
+        },
       })),
     },
     { type: 'separator' },
@@ -1007,14 +1057,21 @@ function stealthList() {
 
 let stealthTimer = null;
 let stealthActive = false;
+// 「刚才前台是哪个非 Mio 的 App」—— 设置页的「添加当前前台应用」用它取候选。
+// 必须记非自身的前台应用：用户点开设置面板时，前台已经变成 Mio 自己了。
+let lastForeignFront = null;
 
-function frontBundleId() {
+// 用 lsappinfo 一次拿到 bundleID / 显示名 / pid（零权限，实测约 8.5ms）
+function frontAppInfo() {
   try {
     const asn = execSync('/usr/bin/lsappinfo front 2>/dev/null', { timeout: 1500 }).toString().trim();
     if (!asn) return null;
-    const out = execSync(`/usr/bin/lsappinfo info -only bundleid ${asn} 2>/dev/null`, { timeout: 1500 }).toString();
-    const m = out.match(/"CFBundleIdentifier"="([^"]+)"/);
-    return m ? m[1] : null;
+    const out = execSync(`/usr/bin/lsappinfo info ${asn} 2>/dev/null`, { timeout: 1500 }).toString();
+    const id = (out.match(/"CFBundleIdentifier"="([^"]+)"/) || [])[1];
+    if (!id) return null;
+    const name = (out.match(/^"([^"]+)"/m) || [])[1] || id;
+    const pid = Number((out.match(/\bpid = (\d+)/) || [])[1]) || null;
+    return { id, name, pid };
   } catch { return null; }
 }
 
@@ -1023,13 +1080,20 @@ function applyStealth(on) {
   if (!win || win.isDestroyed() || on === stealthActive) return;
   stealthActive = on;
   const dim = getSettings().stealth.opacity;
-  try { win.setOpacity(on ? (Number.isFinite(dim) ? dim : 0.12) : (loadState().opacity ?? 1)); } catch {}
+  try {
+    win.setOpacity(on
+      ? clamp(Number(dim) || 0.12, 0, 0.9)
+      : clamp(getSettings().appearance.opacity, 0.3, 1));
+  } catch {}
 }
 
 function stealthTick() {
+  const info = frontAppInfo();
+  // pid 比对能同时挡住「开发期的 Electron」和「打包后的 Mio」，不依赖写死 bundleid
+  if (info && info.pid !== process.pid) lastForeignFront = { id: info.id, name: info.name };
   if (!getSettings().stealth.enabled) { applyStealth(false); return; }
-  const id = frontBundleId();
-  applyStealth(!!id && stealthList().some((a) => a.id === id));
+  applyStealth(!!info && info.pid !== process.pid && stealthList().some((a) => a.id === info.id));
+
 }
 
 const readLoginItem = () => { try { return app.getLoginItemSettings().openAtLogin; } catch { return false; } };
@@ -1043,13 +1107,46 @@ ipcMain.handle('settings-get', () => ({
   stealthActive,
   version: app.getVersion(),
   userDataPath: app.getPath('userData'),
+  displays: displayList(),
+  lastFrontApp: lastForeignFront,
 }));
 
 ipcMain.handle('settings-set', (_e, patch) => {
-  const next = deepMerge(getSettings(), patch || {});
-  saveState({ settings: next });
+  const before = getSettings();
+  const next = patchSettings(patch);
+  // 窗口级外观即时生效；尺寸/主题等纯渲染层的项由渲染层自己应用
+  if (JSON.stringify(before.appearance) !== JSON.stringify(next.appearance)) applyAppearance(next.appearance);
+  if (before.appearance.displayId !== next.appearance.displayId && next.appearance.displayId) {
+    moveToDisplay(next.appearance.displayId);
+  }
   if (next.stealth && next.stealth.enabled === false) applyStealth(false);
-  return { ...next, loginItem: readLoginItem() };
+  // 正隐身时拖「隐身不透明度」滑块要立刻看到效果，不必等下一次 tick
+  if (stealthActive && before.stealth.opacity !== next.stealth.opacity) {
+    try { win.setOpacity(clamp(Number(next.stealth.opacity) || 0.12, 0, 0.9)); } catch {}
+  }
+  return { ...next, loginItem: readLoginItem(), stealthApps: stealthList(), lastFrontApp: lastForeignFront };
+});
+
+// 可选显示器清单（设置页的「显示在哪块屏幕」）
+function displayList() {
+  const primaryId = String(screen.getPrimaryDisplay().id);
+  return screen.getAllDisplays().map((d) => ({
+    id: String(d.id),
+    label: `${d.label || '显示器'} · ${d.bounds.width}×${d.bounds.height}${String(d.id) === primaryId ? ' · 主屏' : ''}`,
+  }));
+}
+
+ipcMain.handle('displays-list', () => displayList());
+
+// 「添加当前前台应用」：把最近一次识别到的非 Mio 前台应用加进隐身名单
+ipcMain.handle('stealth-capture', () => {
+  const cand = lastForeignFront;
+  if (!cand) return { ok: false, error: '还没识别到其他应用，先把目标 App 切到前台再试' };
+  const list = stealthList();
+  if (list.some((a) => a.id === cand.id)) return { ok: false, error: `${cand.name} 已经在名单里了` };
+  const apps = [...list, cand];
+  patchSettings({ stealth: { apps } });
+  return { ok: true, app: cand, apps };
 });
 
 // v1.4 A：开机自启。以系统登录项为唯一真相，不额外落盘，避免两边不一致
@@ -1192,6 +1289,12 @@ app.whenReady().then(() => {
           stealthAppsOk: stealthList().every((a) => a && typeof a.id === 'string' && typeof a.name === 'string'),
         }));
 
+        // ===== v1.5 断言：窗口级外观（透明度 / 置顶真的落到窗口上）=====
+        applyAppearance({ opacity: 0.7, onTop: false });
+        const winAp = { opacity: win.getOpacity(), onTop: win.isAlwaysOnTop() };
+        applyAppearance();
+        log('V15_WINDOW: ' + JSON.stringify(winAp));
+
         // ===== v1.5 断言：设置中心（第 4 个 tab）=====
         await js(`document.querySelector('[data-tab="home"]').click()`);
         await sleep(250);
@@ -1229,6 +1332,58 @@ app.whenReady().then(() => {
         await shot('electron-v15-search.png');
         await js(`(() => { const b = document.getElementById('setSearch'); b.value = ''; b.dispatchEvent(new Event('input')); })()`);
         await sleep(300);
+
+        // ===== v1.5 断言：外观与主题控件 =====
+        log('V15_APPEAR: ' + await js(`JSON.stringify({
+          seg: [...document.querySelectorAll('#segSize button')].map(b => b.dataset.v + (b.classList.contains('on') ? '*' : '')).join(','),
+          opacityVal: document.getElementById('opacityVal').textContent,
+          rangeVal: document.getElementById('rngOpacity').value,
+          displayOpts: [...document.getElementById('selDisplay').options].length,
+          displaySel: document.getElementById('selDisplay').value || '(follow)',
+          stealthItems: document.querySelectorAll('#stealthList .sl-item').length,
+          sw: ['swOnTop','swGaze','swClickThrough','swReduceMotion'].map(i => document.getElementById(i).checked).join('/')
+        })`));
+        await shot('electron-v15-appearance.png');
+
+        // 球体尺寸必须先改后验：zoom 要真的落到 #mio 上，且写回 settings
+        log('V15_APPLY: ' + await js(`(async () => {
+          const before = document.getElementById('mio').style.zoom || '(none)';
+          document.querySelector('#segSize button[data-v="lg"]').click();
+          await new Promise(r => setTimeout(r, 500));
+          const zoomLg = document.getElementById('mio').style.zoom;
+          const savedLg = (await window.mio.getSettings()).appearance.size;
+          document.querySelector('#segSize button[data-v="md"]').click();
+          await new Promise(r => setTimeout(r, 500));
+          return JSON.stringify({ before, zoomLg, savedLg, back: (await window.mio.getSettings()).appearance.size });
+        })()`));
+
+        // 减弱动效：body 类要挂上，且 CSS 真的把动画关掉
+        log('V15_MOTION: ' + await js(`(async () => {
+          const cb = document.getElementById('swReduceMotion');
+          cb.checked = true; cb.dispatchEvent(new Event('change'));
+          await new Promise(r => setTimeout(r, 500));
+          const orb = document.querySelector('.orb');
+          const off = getComputedStyle(orb).animationName;
+          cb.checked = false; cb.dispatchEvent(new Event('change'));
+          await new Promise(r => setTimeout(r, 500));
+          return JSON.stringify({ classOn: true, animWhileOff: off, animWhileOn: getComputedStyle(orb).animationName });
+        })()`));
+
+        // 隐身名单：删一个 → 落盘；恢复默认 → apps 回到 null
+        log('V15_STEALTH: ' + await js(`(async () => {
+          const n0 = (await window.mio.getSettings()).stealth.apps;
+          const before = document.querySelectorAll('#stealthList .sl-item').length;
+          document.querySelector('#stealthList .sl-del').click();
+          await new Promise(r => setTimeout(r, 500));
+          const saved = (await window.mio.getSettings()).stealth.apps;
+          document.getElementById('stealthReset').click();
+          await new Promise(r => setTimeout(r, 500));
+          return JSON.stringify({
+            fromBuiltin: n0 === null, before,
+            afterRemove: Array.isArray(saved) ? saved.length : -1,
+            resetToNull: (await window.mio.getSettings()).stealth.apps === null
+          });
+        })()`));
 
         // 设置往返：切一次健康提醒总开关，确认能写回主进程
         log('V14_SET_ROUNDTRIP: ' + await js(`(async () => {

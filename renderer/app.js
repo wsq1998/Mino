@@ -6,7 +6,7 @@ const bridge = (window.mio && typeof window.mio.getStats === 'function') ? windo
 // 浏览器预览模式的设置副本，让开关能真的拨动（含深合并，模拟主进程行为）
 const previewSettings = {
   general: { autoOpen: false },
-  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, reduceMotion: false, displayId: null },
+  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
   notify: { style: 'bubble' },
@@ -106,6 +106,11 @@ const api = bridge || {
     return previewSettings;
   },
   setLoginItem: async () => ({ ok: false, error: '浏览器预览模式不支持' }),
+  getDisplays: async () => ([
+    { id: '1', label: '内建视网膜显示器 · 1440×900 · 主屏' },
+    { id: '2', label: 'DELL U2720Q · 2560×1440' },
+  ]),
+  stealthCapture: async () => ({ ok: false, error: '浏览器预览模式不支持' }),
 };
 
 const mioEl = document.getElementById('mio');
@@ -126,13 +131,14 @@ const pad2 = (n) => String(n).padStart(2, '0');
 const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'stealth'];
 let settings = {
   general: { autoOpen: false },
-  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, reduceMotion: false, displayId: null },
+  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
   notify: { style: 'bubble' },
   stealth: { enabled: true, opacity: 0.12, apps: null },
 };
-let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '' };
+let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '', displays: [] };
+let gazeEnabled = true; // 视线跟随开关，由 appearance.gaze 决定
 
 function pickSettings(s) {
   const out = {};
@@ -187,17 +193,33 @@ function renderSettings() {
 
   const apps = settingsMeta.stealthApps || [];
   if (el('stealthAppsNote')) el('stealthAppsNote').textContent =
-    apps.length ? `已收录 ${apps.length} 个：${apps.map((a) => a.name).join(' · ')}` : '已收录：—';
+    apps.length ? `当前名单 ${apps.length} 个` : '名单是空的，Mio 不会自动隐身';
   if (el('aboutVersion')) el('aboutVersion').textContent = settingsMeta.version ? `v${settingsMeta.version}` : '—';
   if (el('aboutPath')) el('aboutPath').textContent = settingsMeta.userDataPath || '—';
+
+  // 外观与主题
+  const ap = settings.appearance;
+  const sizeLabel = { sm: '小', md: '中', lg: '大' }[ap.size] || '中';
+  const seg = el('segSize');
+  if (seg) [...seg.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === ap.size));
+  if (el('opacityVal')) el('opacityVal').textContent = `${Math.round(ap.opacity * 100)}%`;
+  if (el('rngOpacity')) el('rngOpacity').value = String(Math.round(ap.opacity * 100));
+  set('swOnTop', ap.onTop);
+  set('swGaze', ap.gaze);
+  set('swClickThrough', ap.clickThrough);
+  set('swReduceMotion', ap.reduceMotion);
+  if (el('stealthOpacityVal')) el('stealthOpacityVal').textContent = `${Math.round(settings.stealth.opacity * 100)}%`;
+  if (el('rngStealthOpacity')) el('rngStealthOpacity').value = String(Math.round(settings.stealth.opacity * 100));
+  renderStealthList();
 
   // 折叠标题上的摘要：收起时也能一眼看到状态
   const h = settings.health;
   const n = [h.sit, h.water, h.eye].filter(Boolean).length;
   const briefs = {
     general: `自启 ${settingsMeta.loginItem ? '开' : '关'}`,
+    appearance: `${sizeLabel} · ${Math.round(ap.opacity * 100)}%`,
     notify: `报时 ${settings.chime.enabled ? '开' : '关'} · 健康 ${h.enabled ? n + ' 项' : '关'}`,
-    stealth: settings.stealth.enabled ? '自动' : '关',
+    stealth: settings.stealth.enabled ? `${apps.length} 个` : '关',
     about: settingsMeta.version ? `v${settingsMeta.version}` : '—',
   };
   Object.keys(briefs).forEach((k) => {
@@ -221,6 +243,8 @@ async function loadSettings() {
     }
   } catch {}
   renderSettings();
+  applyAppearance();
+  fillDisplays();
 }
 
 // 只发改动的那一枝，主进程做深合并；返回的整棵树里再挑出设置键
@@ -230,10 +254,20 @@ async function patchSettings(patch, after) {
     if (saved && saved.chime) {
       settings = { ...settings, ...pickSettings(saved) };
       if ('loginItem' in saved) settingsMeta.loginItem = !!saved.loginItem;
+      if (saved.stealthApps) settingsMeta.stealthApps = saved.stealthApps;
     }
   } catch {}
   renderSettings();
   if (after) after();
+}
+
+// ['appearance','size'] + 'lg' → { appearance: { size: 'lg' } }
+function buildPatch(path, value) {
+  const keys = Array.isArray(path) ? path : String(path).split('.');
+  const patch = {};
+  let cur = patch;
+  keys.forEach((k, i) => { cur = cur[k] = i === keys.length - 1 ? value : {}; });
+  return patch;
 }
 
 function bindSwitch(id, path, after) {
@@ -255,11 +289,7 @@ function bindSwitch(id, path, after) {
       return;
     }
     // ['chime','enabled'] 或 'chime.enabled' → { chime: { enabled } }
-    const keys = Array.isArray(path) ? path : String(path).split('.');
-    const patch = {};
-    let cur = patch;
-    keys.forEach((k, i) => { cur = cur[k] = i === keys.length - 1 ? on : {}; });
-    await patchSettings(patch, () => after && after(on));
+    await patchSettings(buildPatch(path, on), () => after && after(on));
   });
 }
 
@@ -289,7 +319,7 @@ function interact() {
 function blinkLoop() {
   const delay = 2000 + Math.random() * 4000;
   setTimeout(() => {
-    if (state === 'idle' || state === 'curious') {
+    if (!settings.appearance.reduceMotion && (state === 'idle' || state === 'curious')) {
       eyes.forEach((e) => e.classList.add('blink'));
       setTimeout(() => eyes.forEach((e) => e.classList.remove('blink')), 120);
     }
@@ -300,6 +330,7 @@ blinkLoop();
 
 // ============ 生命感：困倦 ============
 setInterval(() => {
+  if (settings.appearance.reduceMotion) return; // 减弱动效时不做打瞌睡演出
   const idleMs = Date.now() - lastInteract;
   if (idleMs > 5 * 60 * 1000 && state === 'idle') setState('sleepy');
   if (state === 'sleepy' && Math.random() < 0.3) {
@@ -310,6 +341,7 @@ setInterval(() => {
 
 // ============ 视线跟随（全局光标） ============
 api.onCursor((pt) => {
+  if (!gazeEnabled) return;
   if (state === 'sleepy' || state === 'happy') return;
   const rect = mioEl.getBoundingClientRect();
   const cx = rect.left + rect.width / 2;
@@ -324,8 +356,10 @@ api.onCursor((pt) => {
 });
 
 // ============ 点击穿透管理 ============
-// 光标在可交互元素上 → 关闭穿透；否则恢复穿透
+// 光标在可交互元素上 → 关闭穿透；否则恢复穿透。
+// 设置里关掉「点击穿透」后恒为可交互（球体不再抢不到鼠标）。
 document.addEventListener('mousemove', (e) => {
+  if (!settings.appearance.clickThrough) { api.setInteractive(true); return; }
   const hit = e.target.closest('.interactive, .btn, .card');
   api.setInteractive(!!hit);
 });
@@ -585,7 +619,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
     setPanelWide(tab.dataset.tab === 'settings');
     if (tab.dataset.tab === 'status') pollStatus();
     if (tab.dataset.tab === 'clean') { checkAdvice(); refreshCleanHistory(); }
-    if (tab.dataset.tab === 'settings') { renderSettings(); filterSettings(); }
+    if (tab.dataset.tab === 'settings') { renderSettings(); fillDisplays(); filterSettings(); }
   });
 });
 function switchTab(name) {
@@ -1406,7 +1440,78 @@ function resetHealthTimers() {
 resetHealthTimers();
 setInterval(healthTick, 60 * 1000);
 
-// ============ v1.5：设置中心 —— 开关绑定 + 搜索 + 初始化 ============
+// ============ v1.5 设置中心 —— 控件绑定 ============
+// 球体尺寸走 zoom：表情各状态里写死了大量 px，zoom 能整体等比缩放且仍参与布局
+const ORB_ZOOM = { sm: 0.8, md: 1, lg: 1.13 };
+
+function applyAppearance() {
+  const a = settings.appearance;
+  const size = ORB_ZOOM[a.size] ? a.size : 'md';
+  document.body.classList.toggle('reduce-motion', !!a.reduceMotion);
+  // 球体等比缩放：zoom 会真实改变布局占位，flex 里不会错位
+  mioEl.style.zoom = String(ORB_ZOOM[size]);
+  gazeEnabled = !!a.gaze;
+  if (!a.gaze) pupils.forEach((p) => (p.style.transform = 'translate(0px, 0px)'));
+  if (!a.clickThrough) api.setInteractive(true);
+}
+
+// 分段控件（球体尺寸）
+function bindSeg(id, path) {
+  const box = document.getElementById(id);
+  if (!box) return;
+  box.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-v]');
+    if (!btn) return;
+    interact();
+    patchSettings(buildPatch(path, btn.dataset.v), applyAppearance);
+  });
+}
+
+// 滑块：拖动时标签跟手，IPC 写入按 80ms 节流，避免一路刷盘
+function bindRange(id, path, fmt, after) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  let timer = null;
+  const push = () => {
+    const v = Number(el.value);
+    patchSettings(buildPatch(path, v), () => { applyAppearance(); if (after) after(v); });
+  };
+  el.addEventListener('input', () => {
+    interact();
+    if (fmt) fmt(Number(el.value));
+    clearTimeout(timer);
+    timer = setTimeout(push, 80);
+  });
+  el.addEventListener('change', () => { clearTimeout(timer); push(); });
+}
+
+// 隐身名单
+function renderStealthList() {
+  const box = document.getElementById('stealthList');
+  if (!box) return;
+  const apps = settingsMeta.stealthApps || [];
+  if (!apps.length) { box.innerHTML = ''; return; }
+  box.innerHTML = apps.map((a) => `
+    <div class="sl-item">
+      <span class="sl-name">${escHtml(a.name)}</span>
+      <span class="sl-id">${escHtml(a.id)}</span>
+      <button class="sl-del" data-id="${escHtml(a.id)}" title="移除">✕</button>
+    </div>`).join('');
+}
+
+async function fillDisplays() {
+  const sel = document.getElementById('selDisplay');
+  if (!sel) return;
+  let list = [];
+  try { list = await api.getDisplays(); } catch {}
+  if (!list || !list.length) list = [{ id: '0', label: '主屏' }];
+  settingsMeta.displays = list;
+  const cur = settings.appearance.displayId == null ? '' : String(settings.appearance.displayId);
+  sel.innerHTML = '<option value="">跟随鼠标所在屏幕</option>'
+    + list.map((d) => `<option value="${escHtml(d.id)}">${escHtml(d.label)}</option>`).join('');
+  sel.value = list.some((d) => String(d.id) === cur) ? cur : '';
+}
+
 bindSwitch('swLogin', 'login');
 bindSwitch('swAutoOpen', ['general', 'autoOpen']);
 bindSwitch('swChime', ['chime', 'enabled']);
@@ -1416,6 +1521,66 @@ bindSwitch('swSit', ['health', 'sit'], resetHealthTimers);
 bindSwitch('swWater', ['health', 'water'], resetHealthTimers);
 bindSwitch('swEye', ['health', 'eye'], resetHealthTimers);
 bindSwitch('swStealth', ['stealth', 'enabled']);
+// 外观
+bindSwitch('swOnTop', ['appearance', 'onTop'], applyAppearance);
+bindSwitch('swGaze', ['appearance', 'gaze'], applyAppearance);
+bindSwitch('swClickThrough', ['appearance', 'clickThrough'], applyAppearance);
+bindSwitch('swReduceMotion', ['appearance', 'reduceMotion'], applyAppearance);
+bindSeg('segSize', ['appearance', 'size']);
+bindRange('rngOpacity', ['appearance', 'opacity'],
+  (v) => { const n = document.getElementById('opacityVal'); if (n) n.textContent = `${v}%`; });
+bindRange('rngStealthOpacity', ['stealth', 'opacity'],
+  (v) => { const n = document.getElementById('stealthOpacityVal'); if (n) n.textContent = `${v}%`; });
+
+const selDisplay = document.getElementById('selDisplay');
+if (selDisplay) {
+  selDisplay.addEventListener('change', () => {
+    interact();
+    const v = selDisplay.value;
+    patchSettings({ appearance: { displayId: v || null } });
+  });
+}
+
+const stealthListEl = document.getElementById('stealthList');
+if (stealthListEl) {
+  stealthListEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.sl-del');
+    if (!btn) return;
+    interact();
+    const id = btn.dataset.id;
+    const apps = (settingsMeta.stealthApps || []).filter((a) => a.id !== id);
+    const hint = document.getElementById('stealthHint');
+    if (hint) hint.textContent = `已移除，剩 ${apps.length} 个`;
+    patchSettings({ stealth: { apps } });
+  });
+}
+
+const stealthAddBtn = document.getElementById('stealthAdd');
+if (stealthAddBtn) {
+  stealthAddBtn.addEventListener('click', async () => {
+    interact();
+    const hint = document.getElementById('stealthHint');
+    const r = await api.stealthCapture();
+    if (!r || !r.ok) {
+      if (hint) hint.textContent = (r && r.error) || '没识别到其他应用';
+      say((r && r.error) || '没识别到');
+      return;
+    }
+    settingsMeta.stealthApps = r.apps;
+    if (hint) hint.textContent = `已添加 ${r.app.name}`;
+    renderSettings();
+  });
+}
+
+const stealthResetBtn = document.getElementById('stealthReset');
+if (stealthResetBtn) {
+  stealthResetBtn.addEventListener('click', () => {
+    interact();
+    const hint = document.getElementById('stealthHint');
+    if (hint) hint.textContent = '已恢复内置名单';
+    patchSettings({ stealth: { apps: null } });
+  });
+}
 
 // 首页的「打开设置」入口
 const homeToSettings = document.getElementById('homeToSettings');
