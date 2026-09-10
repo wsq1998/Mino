@@ -3,6 +3,26 @@
 // 注意：id="mio" 的元素会作为命名属性挂到 window.mio，
 // 所以必须通过方法签名来甄别真正的 Electron 桥接对象
 const bridge = (window.mio && typeof window.mio.getStats === 'function') ? window.mio : null;
+// 浏览器预览模式的设置副本，让开关能真的拨动（含深合并，模拟主进程行为）
+const previewSettings = {
+  general: { autoOpen: false },
+  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, reduceMotion: false, displayId: null },
+  chime: { enabled: true, from: 9, to: 22, notify: false },
+  health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
+  notify: { style: 'bubble' },
+  stealth: { enabled: true, opacity: 0.12, apps: null },
+  isPackaged: false, loginItem: false,
+  stealthApps: [{ id: 'com.colliderli.iina', name: 'IINA' }, { id: 'org.videolan.vlc', name: 'VLC' }],
+  version: '1.5.0', userDataPath: '~/Library/Application Support/Mio',
+};
+function previewMerge(base, patch) {
+  const out = { ...base };
+  Object.keys(patch || {}).forEach((k) => {
+    const b = base[k], p = patch[k];
+    out[k] = (p && b && typeof p === 'object' && typeof b === 'object') ? previewMerge(b, p) : p;
+  });
+  return out;
+}
 const api = bridge || {
   setInteractive: () => {}, contextMenu: () => {}, dragStart: () => {},
   dragMove: () => {}, dragEnd: () => {},
@@ -79,14 +99,12 @@ const api = bridge || {
     totalFreed: 12.4e9, freed30d: 4.2e9,
   }),
   cleanPaths: async (entries) => entries.map((e) => ({ path: e.path, ok: true })),
-  // ===== v1.4 降级 mock =====
-  getSettings: async () => ({
-    chime: { enabled: true, from: 9, to: 22, notify: false },
-    health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
-    stealth: { enabled: true },
-    isPackaged: false, loginItem: false, stealthApps: [],
-  }),
-  setSettings: async (patch) => patch,
+  // ===== v1.5 降级 mock =====
+  getSettings: async () => previewSettings,
+  setSettings: async (patch) => {
+    Object.assign(previewSettings, previewMerge(previewSettings, patch));
+    return previewSettings;
+  },
   setLoginItem: async () => ({ ok: false, error: '浏览器预览模式不支持' }),
 };
 
@@ -101,15 +119,26 @@ function escHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ============ v1.4：设置（整点报时 / 健康提醒 / 隐身）============
+// ============ v1.5：设置中心（第 4 个 tab）============
 // 声明放在前面：tickClock 会在启动阶段立即调用 chimeTick，不能等到文件末尾才初始化
 const pad2 = (n) => String(n).padStart(2, '0');
+// 只有这些键属于「设置」，其余是 meta（isPackaged / version …），不能混进 settings
+const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'stealth'];
 let settings = {
+  general: { autoOpen: false },
+  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, reduceMotion: false, displayId: null },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
-  stealth: { enabled: true },
+  notify: { style: 'bubble' },
+  stealth: { enabled: true, opacity: 0.12, apps: null },
 };
-let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [] };
+let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '' };
+
+function pickSettings(s) {
+  const out = {};
+  SETTING_KEYS.forEach((k) => { if (s && s[k]) out[k] = s[k]; });
+  return out;
+}
 
 // 报时时段（闭区间，支持跨零点）
 function inChimeRange(h, from, to) {
@@ -135,7 +164,9 @@ function reminderSummary() {
 
 function renderSettings() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+  const el = (id) => document.getElementById(id);
   set('swLogin', settingsMeta.loginItem);
+  set('swAutoOpen', settings.general.autoOpen);
   set('swChime', settings.chime.enabled);
   set('swChimeNotify', settings.chime.notify);
   set('swHealth', settings.health.enabled);
@@ -143,42 +174,78 @@ function renderSettings() {
   set('swWater', settings.health.water);
   set('swEye', settings.health.eye);
   set('swStealth', settings.stealth.enabled);
-  document.getElementById('chimeRange').textContent =
+
+  if (el('chimeRange')) el('chimeRange').textContent =
     `${pad2(settings.chime.from)}:00 — ${pad2(settings.chime.to)}:00`;
-  document.getElementById('quietRange').textContent =
+  if (el('quietRange')) el('quietRange').textContent =
     `${pad2(settings.health.quietFrom)}:00 — ${pad2(settings.health.quietTo)}:00`;
-  document.getElementById('swLogin').disabled = !settingsMeta.isPackaged;
-  document.getElementById('loginHint').textContent = settingsMeta.isPackaged
+  if (el('swLogin')) el('swLogin').disabled = !settingsMeta.isPackaged;
+  if (el('loginHint')) el('loginHint').textContent = settingsMeta.isPackaged
     ? '关闭后 Mio 不再随登录启动'
     : '开发模式无法写入登录项，打包版可用';
-  document.getElementById('reminderInfo').textContent = reminderSummary();
+  if (el('reminderInfo')) el('reminderInfo').textContent = reminderSummary();
+
+  const apps = settingsMeta.stealthApps || [];
+  if (el('stealthAppsNote')) el('stealthAppsNote').textContent =
+    apps.length ? `已收录 ${apps.length} 个：${apps.map((a) => a.name).join(' · ')}` : '已收录：—';
+  if (el('aboutVersion')) el('aboutVersion').textContent = settingsMeta.version ? `v${settingsMeta.version}` : '—';
+  if (el('aboutPath')) el('aboutPath').textContent = settingsMeta.userDataPath || '—';
+
+  // 折叠标题上的摘要：收起时也能一眼看到状态
   const h = settings.health;
   const n = [h.sit, h.water, h.eye].filter(Boolean).length;
-  document.getElementById('settingsBrief').textContent =
-    `自启 ${settingsMeta.loginItem ? '开' : '关'} · 报时 ${settings.chime.enabled ? '开' : '关'} · 健康提醒 ${h.enabled ? n + ' 项' : '关'} · 隐身 ${settings.stealth.enabled ? '开' : '关'}`;
+  const briefs = {
+    general: `自启 ${settingsMeta.loginItem ? '开' : '关'}`,
+    notify: `报时 ${settings.chime.enabled ? '开' : '关'} · 健康 ${h.enabled ? n + ' 项' : '关'}`,
+    stealth: settings.stealth.enabled ? '自动' : '关',
+    about: settingsMeta.version ? `v${settingsMeta.version}` : '—',
+  };
+  Object.keys(briefs).forEach((k) => {
+    const node = el(`sgBrief-${k}`);
+    if (node) node.textContent = briefs[k];
+  });
 }
 
 async function loadSettings() {
   try {
     const s = await api.getSettings();
     if (s && s.chime) {
-      settings = { chime: s.chime, health: s.health, stealth: s.stealth };
-      settingsMeta = { isPackaged: !!s.isPackaged, loginItem: !!s.loginItem, stealthApps: s.stealthApps || [] };
+      settings = { ...settings, ...pickSettings(s) };
+      settingsMeta = {
+        isPackaged: !!s.isPackaged,
+        loginItem: !!s.loginItem,
+        stealthApps: s.stealthApps || [],
+        version: s.version || '',
+        userDataPath: s.userDataPath || '',
+      };
     }
   } catch {}
   renderSettings();
 }
 
+// 只发改动的那一枝，主进程做深合并；返回的整棵树里再挑出设置键
+async function patchSettings(patch, after) {
+  try {
+    const saved = await api.setSettings(patch);
+    if (saved && saved.chime) {
+      settings = { ...settings, ...pickSettings(saved) };
+      if ('loginItem' in saved) settingsMeta.loginItem = !!saved.loginItem;
+    }
+  } catch {}
+  renderSettings();
+  if (after) after();
+}
+
 function bindSwitch(id, path, after) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.addEventListener('change', async () => {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.addEventListener('change', async () => {
     interact();
-    const on = el.checked;
+    const on = node.checked;
     if (path === 'login') {
       const r = await api.setLoginItem(on);
       if (!r || !r.ok) {
-        el.checked = !on;
+        node.checked = !on;
         say((r && r.error) || '设置失败');
         return;
       }
@@ -187,14 +254,12 @@ function bindSwitch(id, path, after) {
       renderSettings();
       return;
     }
-    const next = { ...settings, [path[0]]: { ...settings[path[0]], [path[1]]: on } };
-    try {
-      const saved = await api.setSettings(next);
-      if (saved && saved.chime) settings = { chime: saved.chime, health: saved.health, stealth: saved.stealth };
-      else settings = next;
-    } catch { settings = next; }
-    renderSettings();
-    if (after) after(on);
+    // ['chime','enabled'] 或 'chime.enabled' → { chime: { enabled } }
+    const keys = Array.isArray(path) ? path : String(path).split('.');
+    const patch = {};
+    let cur = patch;
+    keys.forEach((k, i) => { cur = cur[k] = i === keys.length - 1 ? on : {}; });
+    await patchSettings(patch, () => after && after(on));
   });
 }
 
@@ -516,8 +581,11 @@ document.querySelectorAll('.tab').forEach((tab) => {
     if (scroller) scroller.scrollTop = 0;
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
     document.querySelectorAll('.tab-page').forEach((p) => (p.hidden = p.id !== 'page-' + tab.dataset.tab));
+    // 设置页内容多，进来自动展开成宽面板
+    setPanelWide(tab.dataset.tab === 'settings');
     if (tab.dataset.tab === 'status') pollStatus();
     if (tab.dataset.tab === 'clean') { checkAdvice(); refreshCleanHistory(); }
+    if (tab.dataset.tab === 'settings') { renderSettings(); filterSettings(); }
   });
 });
 function switchTab(name) {
@@ -1338,8 +1406,9 @@ function resetHealthTimers() {
 resetHealthTimers();
 setInterval(healthTick, 60 * 1000);
 
-// ============ v1.4：设置开关绑定 + 初始化 ============
+// ============ v1.5：设置中心 —— 开关绑定 + 搜索 + 初始化 ============
 bindSwitch('swLogin', 'login');
+bindSwitch('swAutoOpen', ['general', 'autoOpen']);
 bindSwitch('swChime', ['chime', 'enabled']);
 bindSwitch('swChimeNotify', ['chime', 'notify']);
 bindSwitch('swHealth', ['health', 'enabled']);
@@ -1347,6 +1416,42 @@ bindSwitch('swSit', ['health', 'sit'], resetHealthTimers);
 bindSwitch('swWater', ['health', 'water'], resetHealthTimers);
 bindSwitch('swEye', ['health', 'eye'], resetHealthTimers);
 bindSwitch('swStealth', ['stealth', 'enabled']);
+
+// 首页的「打开设置」入口
+const homeToSettings = document.getElementById('homeToSettings');
+if (homeToSettings) homeToSettings.addEventListener('click', () => { interact(); switchTab('settings'); });
+
+// 设置搜索：按行匹配，命中行所在的整组自动展开，无命中则整组隐藏
+function filterSettings() {
+  const box = document.getElementById('setSearch');
+  const q = (box ? box.value : '').trim().toLowerCase();
+  const groups = [...document.querySelectorAll('#page-settings .sgroup')];
+  let hits = 0;
+  groups.forEach((g) => {
+    const rows = [...g.querySelectorAll('.set-row, .set-note')];
+    if (!q) {
+      rows.forEach((r) => (r.hidden = false));
+      g.hidden = false;
+      g.dataset.autoOpen = '';
+      return;
+    }
+    let local = 0;
+    rows.forEach((r) => {
+      const hit = r.textContent.toLowerCase().includes(q);
+      r.hidden = !hit;
+      if (hit) local++;
+    });
+    g.hidden = local === 0;
+    if (local > 0) { hits += local; if (!g.open) g.open = true; }
+  });
+  const more = document.getElementById('setMore');
+  if (more) more.textContent = q && !hits
+    ? `没有匹配「${box.value.trim()}」的设置项`
+    : (q ? `匹配 ${hits} 项` : '外观与主题 · 剪贴板 · 天气 · AI 助手 · 权限，将随后续版本陆续加入');
+}
+const setSearch = document.getElementById('setSearch');
+if (setSearch) setSearch.addEventListener('input', filterSettings);
+
 loadSettings();
 
 // 启动问候

@@ -12,6 +12,7 @@
       <button class="tab active" data-tab="home">常用</button>
       <button class="tab" data-tab="status">状态</button>
       <button class="tab" data-tab="clean">清理</button>
+      <button class="tab" data-tab="settings">设置</button>
     </div>
     <div class="panel-scroll" id="panelScroll">
 
@@ -50,31 +51,7 @@
         </div>
         <div id="reminderInfo" class="sub">久坐提醒：每 45 分钟</div>
       </div>
-      <!-- v1.4：设置（钻入式详情页） -->
-      <div class="card expandable interactive-btn" id="settingsCard" data-dv-title="Mio 设置">
-        <div class="label">Mio 设置 <span class="expand-hint">展开</span></div>
-        <div id="settingsBrief" class="sub">开机自启 · 提醒 · 隐身</div>
-        <div class="detail">
-          <div class="set-group">通用</div>
-          <div class="set-row"><span>开机自启动</span><label class="switch"><input type="checkbox" id="swLogin"><i></i></label></div>
-          <div class="set-note" id="loginHint"></div>
-
-          <div class="set-group">提醒</div>
-          <div class="set-row"><span>整点报时</span><label class="switch"><input type="checkbox" id="swChime"><i></i></label></div>
-          <div class="set-row"><span>报时时段</span><span class="set-val" id="chimeRange">09:00 — 22:00</span></div>
-          <div class="set-row"><span>整点同时发系统通知</span><label class="switch"><input type="checkbox" id="swChimeNotify"><i></i></label></div>
-          <div class="set-row"><span>健康提醒</span><label class="switch"><input type="checkbox" id="swHealth"><i></i></label></div>
-          <div class="set-row indent"><span>久坐（每 45 分钟）</span><label class="switch"><input type="checkbox" id="swSit"><i></i></label></div>
-          <div class="set-row indent"><span>喝水（每 45 分钟）</span><label class="switch"><input type="checkbox" id="swWater"><i></i></label></div>
-          <div class="set-row indent"><span>护眼（每 20 分钟）</span><label class="switch"><input type="checkbox" id="swEye"><i></i></label></div>
-          <div class="set-row"><span>免打扰时段</span><span class="set-val" id="quietRange">22:00 — 09:00</span></div>
-
-          <div class="set-group">隐身</div>
-          <div class="set-row"><span>看视频 / 演示时自动隐身</span><label class="switch"><input type="checkbox" id="swStealth"><i></i></label></div>
-          <div class="set-note">已收录：IINA · VLC · QuickTime · 视频 · Keynote · PowerPoint · WPS · 腾讯会议 · Zoom · 飞书 · 钉钉<br>隐身时球体淡化到 12%，鼠标移上去即可交互唤回</div>
-          <div class="set-note">全屏游戏等无法枚举的场景，用快捷键 <b>⌥ H</b> 手动隐藏 / 显示</div>
-        </div>
-      </div>
+      <button class="btn wide" id="homeToSettings">打开设置</button>
     </div>
 
     <!-- 状态 -->
@@ -205,6 +182,58 @@
           <div id="cleanHistList" class="msg-list"></div>
         </div>
       </div>
+    </div>
+
+    <!-- 设置（v1.5 设置中心：分组折叠 + 搜索） -->
+    <div class="tab-page" id="page-settings" hidden>
+      <input id="setSearch" class="set-search" type="search" placeholder="搜索设置项" autocomplete="off">
+
+      <details class="sgroup" data-group="general" open>
+        <summary class="sgroup-h"><span class="sg-name">通用</span><span class="sg-brief" id="sgBrief-general"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>开机自启动</span><label class="switch"><input type="checkbox" id="swLogin"><i></i></label></div>
+          <div class="set-note" id="loginHint"></div>
+          <div class="set-row"><span>启动后自动展开面板</span><label class="switch"><input type="checkbox" id="swAutoOpen"><i></i></label></div>
+          <div class="set-note">开启后 Mio 启动时直接弹出快捷面板</div>
+        </div>
+      </details>
+
+      <details class="sgroup" data-group="notify" open>
+        <summary class="sgroup-h"><span class="sg-name">提醒与通知</span><span class="sg-brief" id="sgBrief-notify"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>整点报时</span><label class="switch"><input type="checkbox" id="swChime"><i></i></label></div>
+          <div class="set-row"><span>报时时段</span><span class="set-val" id="chimeRange">09:00 — 22:00</span></div>
+          <div class="set-row"><span>整点同时发系统通知</span><label class="switch"><input type="checkbox" id="swChimeNotify"><i></i></label></div>
+          <div class="set-row"><span>健康提醒</span><label class="switch"><input type="checkbox" id="swHealth"><i></i></label></div>
+          <div class="set-row indent"><span>久坐（每 45 分钟）</span><label class="switch"><input type="checkbox" id="swSit"><i></i></label></div>
+          <div class="set-row indent"><span>喝水（每 45 分钟）</span><label class="switch"><input type="checkbox" id="swWater"><i></i></label></div>
+          <div class="set-row indent"><span>护眼（每 20 分钟）</span><label class="switch"><input type="checkbox" id="swEye"><i></i></label></div>
+          <div class="set-row"><span>免打扰时段</span><span class="set-val" id="quietRange">22:00 — 09:00</span></div>
+          <div class="set-note">所有提醒统一调度，任意两次间隔至少 3 分钟；免打扰时段内全部静默</div>
+        </div>
+      </details>
+
+      <details class="sgroup" data-group="stealth" open>
+        <summary class="sgroup-h"><span class="sg-name">隐身</span><span class="sg-brief" id="sgBrief-stealth"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>看视频 / 演示时自动隐身</span><label class="switch"><input type="checkbox" id="swStealth"><i></i></label></div>
+          <div class="set-note">隐身时球体淡化，鼠标移上去即可交互唤回</div>
+          <div class="set-note" id="stealthAppsNote">已收录：—</div>
+          <div class="set-row"><span>全屏游戏等无法枚举的场景</span><span class="set-val">用 <b>⌥ H</b> 手动隐藏</span></div>
+        </div>
+      </details>
+
+      <details class="sgroup" data-group="about">
+        <summary class="sgroup-h"><span class="sg-name">关于</span><span class="sg-brief" id="sgBrief-about"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>版本</span><span class="set-val" id="aboutVersion">—</span></div>
+          <div class="set-row"><span>数据存放</span><span class="set-val" id="aboutPath">—</span></div>
+          <div class="set-row"><span>联网</span><span class="set-val">仅天气与 AI（需手动开启）</span></div>
+          <div class="set-note">CPU / 内存 / 磁盘 / 电池等数据全部只在本机处理，从不上传。</div>
+        </div>
+      </details>
+
+      <div class="set-more" id="setMore">外观与主题 · 剪贴板 · 天气 · AI 助手 · 权限，将随后续版本陆续加入</div>
     </div>
     </div>
 

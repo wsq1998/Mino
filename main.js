@@ -26,17 +26,47 @@ function saveState(patch) {
   try { fs.writeFileSync(stateFile, JSON.stringify(next)); } catch {}
 }
 
-// ============ v1.4：设置（含默认值，缺失字段自动补齐 → 老配置文件可直接升级）============
+// ============ v1.5：设置中心 ============
+// settings 自 v1.5 起带版本号（_v）。升级靠 deepMerge 而非逐版 migration 函数：
+// 默认值是「骨架」，用户配置叠上去，缺失字段自动补齐 —— v1.4 只有 chime/health/stealth
+// 三组，读进来就会自动长出 general/appearance 等新组，老配置文件零改动可用。
+const SETTINGS_VERSION = 2;
+
 const DEFAULT_SETTINGS = {
+  general: { autoOpen: false },
+  appearance: {
+    theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
+    size: 'md',           // sm | md | lg
+    opacity: 1,           // 0.4 ~ 1
+    onTop: true,
+    gaze: true,           // 视线跟随
+    reduceMotion: false,  // 减弱动效
+    displayId: null,      // null = 跟随光标所在屏
+  },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
-  stealth: { enabled: true },
+  notify: { style: 'bubble' }, // bubble | system | both
+  stealth: { enabled: true, opacity: 0.12, apps: null }, // apps=null → 用内置名单
 };
 
+// 深合并：base 作骨架，patch 覆盖其上；数组整体替换（不逐项合并）
+function deepMerge(base, patch) {
+  const out = Array.isArray(base) ? base.slice() : { ...base };
+  if (!patch || typeof patch !== 'object') return out;
+  for (const k of Object.keys(patch)) {
+    const b = base ? base[k] : undefined;
+    const p = patch[k];
+    const bothPlain = p && b && typeof p === 'object' && typeof b === 'object'
+      && !Array.isArray(p) && !Array.isArray(b);
+    out[k] = bothPlain ? deepMerge(b, p) : (p === undefined ? out[k] : p);
+  }
+  return out;
+}
+
 function getSettings() {
-  const s = loadState().settings || {};
-  const merge = (k) => ({ ...DEFAULT_SETTINGS[k], ...(s[k] || {}) });
-  return { chime: merge('chime'), health: merge('health'), stealth: merge('stealth') };
+  const s = deepMerge(DEFAULT_SETTINGS, loadState().settings || {});
+  s._v = SETTINGS_VERSION;
+  return s;
 }
 
 // ============ v1.4 F：多显示器位置记忆 ============
@@ -952,20 +982,28 @@ ipcMain.on('quit', () => app.quit());
 // ============ v1.4 E：前台应用智能隐身 ============
 // 真正的「检测全屏」要读 AXFullScreen，需要辅助功能权限 —— 本批次不引入权限，
 // 改用「前台应用 bundleid 名单」近似，并配 ⌥H 手动兜底。UI 文案也如实叫「看视频/演示时自动隐身」。
+// v1.5：从纯 bundleid 数组升级为 {id,name}，名称由主进程提供，
+// 渲染层不必再维护一份中文映射，设置页也能直接展示/增删。
 const STEALTH_APPS = [
-  'com.colliderli.iina',           // IINA
-  'org.videolan.vlc',              // VLC
-  'com.apple.QuickTimePlayerX',    // QuickTime Player
-  'com.apple.TV',                  // 系统「视频」
-  'com.apple.iWork.Keynote',       // Keynote
-  'com.microsoft.Powerpoint',      // PowerPoint
-  'com.kingsoft.wpsoffice.mac',    // WPS
-  'com.tencent.meeting',           // 腾讯会议
-  'com.tencent.tencentmeeting',    // 腾讯会议（备用 id）
-  'us.zoom.xos',                   // Zoom
-  'com.electron.lark',             // 飞书
-  'com.alibaba.dingtalk.mac',      // 钉钉
+  { id: 'com.colliderli.iina', name: 'IINA' },
+  { id: 'org.videolan.vlc', name: 'VLC' },
+  { id: 'com.apple.QuickTimePlayerX', name: 'QuickTime' },
+  { id: 'com.apple.TV', name: '视频' },
+  { id: 'com.apple.iWork.Keynote', name: 'Keynote' },
+  { id: 'com.microsoft.Powerpoint', name: 'PowerPoint' },
+  { id: 'com.kingsoft.wpsoffice.mac', name: 'WPS' },
+  { id: 'com.tencent.meeting', name: '腾讯会议' },
+  { id: 'com.tencent.tencentmeeting', name: '腾讯会议' },
+  { id: 'us.zoom.xos', name: 'Zoom' },
+  { id: 'com.electron.lark', name: '飞书' },
+  { id: 'com.alibaba.dingtalk.mac', name: '钉钉' },
 ];
+
+// 用户可在设置里增删。settings.stealth.apps === null 表示「沿用内置名单」
+function stealthList() {
+  const custom = getSettings().stealth.apps;
+  return Array.isArray(custom) ? custom : STEALTH_APPS;
+}
 
 let stealthTimer = null;
 let stealthActive = false;
@@ -984,27 +1022,31 @@ function frontBundleId() {
 function applyStealth(on) {
   if (!win || win.isDestroyed() || on === stealthActive) return;
   stealthActive = on;
-  try { win.setOpacity(on ? 0.12 : (loadState().opacity ?? 1)); } catch {}
+  const dim = getSettings().stealth.opacity;
+  try { win.setOpacity(on ? (Number.isFinite(dim) ? dim : 0.12) : (loadState().opacity ?? 1)); } catch {}
 }
 
 function stealthTick() {
   if (!getSettings().stealth.enabled) { applyStealth(false); return; }
   const id = frontBundleId();
-  applyStealth(!!id && STEALTH_APPS.includes(id));
+  applyStealth(!!id && stealthList().some((a) => a.id === id));
 }
 
 const readLoginItem = () => { try { return app.getLoginItemSettings().openAtLogin; } catch { return false; } };
 
+// 设置读写：patch 只带改动的那一枝即可（深合并），不必回传整棵树
 ipcMain.handle('settings-get', () => ({
   ...getSettings(),
   isPackaged: app.isPackaged,
   loginItem: readLoginItem(),
-  stealthApps: STEALTH_APPS,
+  stealthApps: stealthList(),
   stealthActive,
+  version: app.getVersion(),
+  userDataPath: app.getPath('userData'),
 }));
 
 ipcMain.handle('settings-set', (_e, patch) => {
-  const next = { ...getSettings(), ...(patch || {}) };
+  const next = deepMerge(getSettings(), patch || {});
   saveState({ settings: next });
   if (next.stealth && next.stealth.enabled === false) applyStealth(false);
   return { ...next, loginItem: readLoginItem() };
@@ -1142,24 +1184,51 @@ app.whenReady().then(() => {
           watt: s.batteryHealth && s.batteryHealth.adapterWatt
         }))`));
 
-        // 设置面板：钻入 → 开关渲染 → 返回
+        // ===== v1.5 断言：设置 schema v2（老配置 deepMerge 补齐新组）=====
+        log('V15_SCHEMA: ' + JSON.stringify({
+          v: getSettings()._v,
+          groups: Object.keys(getSettings()).filter((k) => k !== '_v').join(','),
+          appearanceKeys: Object.keys(getSettings().appearance).join(','),
+          stealthAppsOk: stealthList().every((a) => a && typeof a.id === 'string' && typeof a.name === 'string'),
+        }));
+
+        // ===== v1.5 断言：设置中心（第 4 个 tab）=====
         await js(`document.querySelector('[data-tab="home"]').click()`);
-        await sleep(300);
-        await js(`document.getElementById('settingsCard').click()`);
+        await sleep(250);
+        await js(`document.querySelector('[data-tab="settings"]').click()`);
         await sleep(700);
-        log('V14_SETUI: ' + await js(`JSON.stringify({
-          dvOpen: !document.getElementById('detailView').hidden,
-          title: document.getElementById('dvTitle').textContent,
-          switches: document.querySelectorAll('#dvBody .switch input').length,
+        log('V15_TAB: ' + await js(`JSON.stringify({
+          tabs: [...document.querySelectorAll('.tab')].map(t => t.dataset.tab).join('/'),
+          active: document.querySelector('.tab.active').dataset.tab,
+          pageVisible: !document.getElementById('page-settings').hidden,
+          othersHidden: [...document.querySelectorAll('.tab-page')].filter(p => p.id !== 'page-settings').every(p => p.hidden),
+          wide: document.getElementById('panel').classList.contains('wide')
+        })`));
+        log('V15_SETUI: ' + await js(`JSON.stringify({
+          groups: [...document.querySelectorAll('#page-settings .sgroup')].map(g => g.dataset.group).join(','),
+          open: [...document.querySelectorAll('#page-settings .sgroup')].filter(g => g.open).length,
+          switches: document.querySelectorAll('#page-settings .switch input').length,
           chimeRange: document.getElementById('chimeRange').textContent,
           quietRange: document.getElementById('quietRange').textContent,
           loginDisabled: document.getElementById('swLogin').disabled,
-          brief: document.getElementById('settingsBrief').textContent
+          briefs: ['general','notify','stealth','about'].map(k => document.getElementById('sgBrief-' + k).textContent).join(' | '),
+          version: document.getElementById('aboutVersion').textContent,
+          path: document.getElementById('aboutPath').textContent,
+          appsNote: document.getElementById('stealthAppsNote').textContent.slice(0, 34)
         })`));
-        await shot('electron-v14-settings.png');
-        await js(`document.getElementById('dvBack').click()`);
-        await sleep(500);
-        log('V14_SETTINGS_BACK: ' + await js(`JSON.stringify({ dvHidden: document.getElementById('detailView').hidden })`));
+        await shot('electron-v15-settings.png');
+
+        // 搜索过滤：输入「护眼」应只剩 1 行命中，且仅「提醒与通知」组可见
+        await js(`(() => { const b = document.getElementById('setSearch'); b.value = '护眼'; b.dispatchEvent(new Event('input')); })()`);
+        await sleep(350);
+        log('V15_SEARCH: ' + await js(`JSON.stringify({
+          visibleGroups: [...document.querySelectorAll('#page-settings .sgroup')].filter(g => !g.hidden).map(g => g.dataset.group).join(','),
+          visibleRows: [...document.querySelectorAll('#page-settings .set-row')].filter(r => !r.hidden).length,
+          more: document.getElementById('setMore').textContent
+        })`));
+        await shot('electron-v15-search.png');
+        await js(`(() => { const b = document.getElementById('setSearch'); b.value = ''; b.dispatchEvent(new Event('input')); })()`);
+        await sleep(300);
 
         // 设置往返：切一次健康提醒总开关，确认能写回主进程
         log('V14_SET_ROUNDTRIP: ' + await js(`(async () => {
