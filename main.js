@@ -1345,6 +1345,30 @@ app.whenReady().then(() => {
         })`));
         await shot('electron-v15-appearance.png');
 
+        // 主题：切浅色后变量、面板底色要真的变；再切回深色
+        await js(`document.querySelector('#segTheme button[data-v="light"]').click()`);
+        await sleep(700);
+        log('V15_THEME: ' + await js(`JSON.stringify({
+          on: document.body.classList.contains('theme-light'),
+          tx1: getComputedStyle(document.body).getPropertyValue('--mi-tx1').trim(),
+          panelBg: getComputedStyle(document.getElementById('panel')).backgroundColor,
+          brief: document.getElementById('sgBrief-appearance').textContent,
+          saved: null
+        })`));
+        log('V15_THEME_SAVED: ' + JSON.stringify({ theme: getSettings().appearance.theme }));
+        await shot('electron-v15-light-settings.png');
+        await js(`document.querySelector('[data-tab="home"]').click()`);
+        await sleep(500);
+        await shot('electron-v15-light-home.png');
+        await js(`document.querySelector('[data-tab="settings"]').click()`);
+        await sleep(400);
+        await js(`document.querySelector('#segTheme button[data-v="dark"]').click()`);
+        await sleep(600);
+        log('V15_THEME_BACK: ' + await js(`JSON.stringify({
+          on: document.body.classList.contains('theme-light'),
+          tx1: getComputedStyle(document.body).getPropertyValue('--mi-tx1').trim()
+        })`));
+
         // 球体尺寸必须先改后验：zoom 要真的落到 #mio 上，且写回 settings
         log('V15_APPLY: ' + await js(`(async () => {
           const before = document.getElementById('mio').style.zoom || '(none)';

@@ -200,8 +200,11 @@ function renderSettings() {
   // 外观与主题
   const ap = settings.appearance;
   const sizeLabel = { sm: '小', md: '中', lg: '大' }[ap.size] || '中';
+  const themeLabel = { dark: '深色', light: '浅色', auto: '跟随系统' }[ap.theme] || '深色';
   const seg = el('segSize');
   if (seg) [...seg.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === ap.size));
+  const segT = el('segTheme');
+  if (segT) [...segT.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === ap.theme));
   if (el('opacityVal')) el('opacityVal').textContent = `${Math.round(ap.opacity * 100)}%`;
   if (el('rngOpacity')) el('rngOpacity').value = String(Math.round(ap.opacity * 100));
   set('swOnTop', ap.onTop);
@@ -217,7 +220,7 @@ function renderSettings() {
   const n = [h.sit, h.water, h.eye].filter(Boolean).length;
   const briefs = {
     general: `自启 ${settingsMeta.loginItem ? '开' : '关'}`,
-    appearance: `${sizeLabel} · ${Math.round(ap.opacity * 100)}%`,
+    appearance: `${themeLabel} · ${sizeLabel} · ${Math.round(ap.opacity * 100)}%`,
     notify: `报时 ${settings.chime.enabled ? '开' : '关'} · 健康 ${h.enabled ? n + ' 项' : '关'}`,
     stealth: settings.stealth.enabled ? `${apps.length} 个` : '关',
     about: settingsMeta.version ? `v${settingsMeta.version}` : '—',
@@ -1444,10 +1447,22 @@ setInterval(healthTick, 60 * 1000);
 // 球体尺寸走 zoom：表情各状态里写死了大量 px，zoom 能整体等比缩放且仍参与布局
 const ORB_ZOOM = { sm: 0.8, md: 1, lg: 1.13 };
 
+// 主题：深色 / 浅色 / 跟随系统。matchMedia 直接反映系统外观，不需要走 IPC。
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+function applyTheme() {
+  const t = settings.appearance.theme;
+  const light = t === 'light' || (t === 'auto' && !darkQuery.matches);
+  document.body.classList.toggle('theme-light', light);
+}
+darkQuery.addEventListener('change', () => {
+  if (settings.appearance.theme === 'auto') applyTheme();
+});
+
 function applyAppearance() {
   const a = settings.appearance;
   const size = ORB_ZOOM[a.size] ? a.size : 'md';
   document.body.classList.toggle('reduce-motion', !!a.reduceMotion);
+  applyTheme();
   // 球体等比缩放：zoom 会真实改变布局占位，flex 里不会错位
   mioEl.style.zoom = String(ORB_ZOOM[size]);
   gazeEnabled = !!a.gaze;
@@ -1527,6 +1542,7 @@ bindSwitch('swGaze', ['appearance', 'gaze'], applyAppearance);
 bindSwitch('swClickThrough', ['appearance', 'clickThrough'], applyAppearance);
 bindSwitch('swReduceMotion', ['appearance', 'reduceMotion'], applyAppearance);
 bindSeg('segSize', ['appearance', 'size']);
+bindSeg('segTheme', ['appearance', 'theme']);
 bindRange('rngOpacity', ['appearance', 'opacity'],
   (v) => { const n = document.getElementById('opacityVal'); if (n) n.textContent = `${v}%`; });
 bindRange('rngStealthOpacity', ['stealth', 'opacity'],
