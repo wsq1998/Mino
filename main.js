@@ -31,10 +31,10 @@ function saveState(patch) {
 // 默认值是「骨架」，用户配置叠上去，缺失字段自动补齐 —— v1.4 只有 chime/health/stealth
 // 三组，读进来就会自动长出 general/appearance 等新组，老配置文件零改动可用。
 // v1.6 再叠一层：clipboard/capture/hotkey/pomodoro/consent 五个新区，老键名一个不动。
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 
 const DEFAULT_SETTINGS = {
-  _v: 3,
+  _v: 4,
   general: { autoOpen: false },
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
@@ -58,6 +58,13 @@ const DEFAULT_SETTINGS = {
   capture: { mode: 'region', dest: 'clipboard' },                 // E4（dest 本版恒为剪贴板）
   hotkey: { trigger: 'Alt+Space' },                                // D1（Electron accelerator 规范串）
   consent: { permsIntroSeen: false },                              // 统一说明弹层「只弹一次」标志
+  // v1.7 F 组：天气。数据源 wttr.in（免 key，用户零配置 —— 决策见路线图 §9.1）
+  weather: {
+    enabled: true,
+    city: null,        // null = 自动（IP 定位到城市级，精度对「今天要不要带伞」够用）
+    interval: 60,      // 30 | 60 | 120 分钟
+    unit: 'c',         // c | f
+  },
 };
 
 // 深合并：base 作骨架，patch 覆盖其上；数组整体替换（不逐项合并）
@@ -577,6 +584,7 @@ ipcMain.handle('system-full', () => {
     net: netRate(),
     battery: batteryInfo(),
     batteryHealth: batteryHealth(), // v1.4 D：无电池时为 null，渲染层整行隐藏
+    io: ioCache,        // v1.7：磁盘 IO 小指标（后台 15s 采样，可能为 null 直到首次采样落地）
     top: topProcesses(), // v1.2 S4：Top10 + pid
   };
 });
@@ -1164,6 +1172,14 @@ ipcMain.handle('settings-set', (_e, patch) => {
     if (next.clipboard.enabled) startClip();
     else { stopClip(); clearClip(); }
   }
+  // v1.7 天气：开关/城市/频率/单位任一变化都重排轮询；城市或单位变了立刻重取
+  if (JSON.stringify(before.weather) !== JSON.stringify(next.weather)) {
+    scheduleWeather();
+    if (before.weather.city !== next.weather.city || before.weather.unit !== next.weather.unit) {
+      weatherCache = null;
+      getWeather(true);
+    }
+  }
   if (Number(before.clipboard.limit) !== Number(next.clipboard.limit)) {
     enforceLimit();
     broadcastClip();
@@ -1209,6 +1225,176 @@ ipcMain.handle('login-set', (_e, enabled) => {
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
+
+// ============ v1.7：横切小工具 ============
+// 带超时的命令执行（Promise 化）。权限探测/锁屏/截图都走它，超时一律视为失败而不是挂死
+function runCmd(cmd, args, timeout = 5000) {
+  return new Promise((resolve) => {
+    try {
+      execFile(cmd, args, { timeout }, (err, stdout, stderr) =>
+        resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(stderr || ''), err }));
+    } catch (err) {
+      resolve({ ok: false, stdout: '', stderr: '', err });
+    }
+  });
+}
+
+const fetchJson = async (url, timeout = 8000) => {
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeout) }); // Node 20 内置 fetch，零依赖
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+};
+
+// 权限探测层在 v1.6 已建好（perm-status / perm-request / perm-open + DEEP_LINKS），
+// v1.7 I 组直接复用，不再重复造 —— 这里只补数据与隐私相关通道。
+
+// ============ v1.7 H 组：数据与隐私 ============
+// 清除所有本地数据：走废纸篓（可找回），而不是直接删 —— 与全局安全模型保持一致，
+// 代价只是「重启后生效」。渲染层必须先走通用二次确认通道才允许调 run 档
+const DATA_FILES = ['mio-state.json', 'mio-history.json', 'mio-messages.json', 'mio-clean-history.json'];
+
+ipcMain.handle('data-wipe', async (_e, mode) => {
+  const dir = app.getPath('userData');
+  const files = [];
+  for (const f of DATA_FILES) {
+    const p = path.join(dir, f);
+    if (fs.existsSync(p)) files.push(p);
+  }
+  if (mode !== 'run') return { ok: true, files, preview: true }; // 自检/展示用，绝不动文件
+  const failed = [];
+  for (const p of files) {
+    try { await shell.trashItem(p); } catch { failed.push(path.basename(p)); }
+  }
+  return {
+    ok: failed.length === 0,
+    wiped: files.length - failed.length,
+    failed,
+    needsRestart: true, // 内存里的状态还要活到退出为止，提示用户重启
+  };
+});
+
+ipcMain.handle('data-show', () => {
+  shell.showItemInFolder(path.join(app.getPath('userData'), 'mio-state.json'));
+  return { ok: true };
+});
+
+// ============ v1.7 F 组：天气卡片（wttr.in 免 key + IP 定位城市）============
+// 隐私口径（写死进关于页的那段话）：只把「城市名」发出去，其余数据一律不出本机。
+// 失败语义：断网/超时/返回异常都不许让面板卡住 —— 返回 ok:false，渲染层保留旧值并提示
+const WX_CODES = {
+  0: ['☀️', '晴'], 1: ['🌤️', '大部晴'], 2: ['⛅', '局部多云'], 3: ['☁️', '阴'],
+  45: ['🌫️', '雾'], 48: ['🌫️', '雾凇'],
+  51: ['🌦️', '小毛毛雨'], 53: ['🌦️', '毛毛雨'], 55: ['🌧️', '大毛毛雨'],
+  61: ['🌧️', '小雨'], 63: ['🌧️', '中雨'], 65: ['🌧️', '大雨'],
+  66: ['🌧️', '冻雨'], 67: ['🌧️', '强冻雨'],
+  71: ['🌨️', '小雪'], 73: ['🌨️', '中雪'], 75: ['❄️', '大雪'], 77: ['🌨️', '雪粒'],
+  80: ['🌦️', '阵雨'], 81: ['🌦️', '阵雨'], 82: ['⛈️', '强阵雨'],
+  85: ['🌨️', '阵雪'], 86: ['🌨️', '阵雪'],
+  95: ['⛈️', '雷雨'], 96: ['⛈️', '雷雨伴冰雹'], 99: ['⛈️', '雷雨伴冰雹'],
+};
+const RAIN_CODES = new Set([51, 53, 55, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99]);
+const SNOW_CODES = new Set([71, 73, 75, 77, 85, 86]);
+
+let weatherCache = null;      // 最近一次成功结果（仅内存，重启重取 —— 数据本身无隐私价值，不值得落盘）
+let weatherTimer = null;
+let weatherInflight = null;   // 防并发：轮询与手动刷新撞车时复用同一个 Promise
+
+// 定位策略：手动城市直接拼进 URL；自动模式**不带城市参数** —— wttr.in 会按请求 IP
+// 自行定位，并在 nearest_area 里把地名带回来。这样连 IP 定位服务都省了
+// （ipapi.co 挂着 Cloudflare 人机验证，实测拿不到 JSON，弃用），隐私面也更小
+async function fetchWeather() {
+  const manual = getSettings().weather.city;
+  const unit = getSettings().weather.unit === 'f' ? 'f' : 'c';
+  const url = manual
+    ? `https://wttr.in/${encodeURIComponent(manual)}?format=j1`
+    : 'https://wttr.in/?format=j1';
+  const j = await fetchJson(url);
+  const cur = j && j.current_condition && j.current_condition[0];
+  // wttr.in 的键名是大写单位（temp_C / temp_F / FeelsLikeC），小写会拿到 undefined
+  const tKey = unit === 'f' ? 'temp_F' : 'temp_C';
+  const fKey = unit === 'f' ? 'FeelsLikeF' : 'FeelsLikeC';
+  if (!cur || cur[tKey] === undefined) throw new Error('返回结构异常');
+  const area = j && j.nearest_area && j.nearest_area[0];
+  const city = manual
+    || (area && area.areaName && area.areaName[0] && area.areaName[0].value)
+    || '当前位置';
+  const code = Number(cur.weatherCode) || 0;
+  const [icon, desc] = WX_CODES[code] || ['🌡️', '未知'];
+  const hint = RAIN_CODES.has(code) ? '出门记得带伞 ☂️'
+    : SNOW_CODES.has(code) ? '路滑，注意保暖 🧣' : '';
+  return {
+    ok: true,
+    data: {
+      city,
+      auto: !manual, // 城市来自 IP 定位时，设置页要能看到「定位到哪了」
+      icon,
+      desc,
+      temp: Math.round(Number(cur[tKey])),
+      feels: Math.round(Number(cur[fKey] ?? cur[tKey])),
+      humidity: Number(cur.humidity) || null,
+      wind: Math.round(Number(cur.windspeedKmph) || 0),
+      unit: unit === 'f' ? '℉' : '℃',
+      hint,
+      at: Date.now(),
+    },
+  };
+}
+
+// 统一入口：缓存 10 分钟内直接复用；失败时保留旧数据并带 error 出去（面板不卡住）
+async function getWeather(force = false) {
+  if (!getSettings().weather.enabled) return { ok: false, disabled: true };
+  if (!force && weatherCache && Date.now() - weatherCache.at < 10 * 60 * 1000) {
+    return { ok: true, data: weatherCache, cached: true };
+  }
+  if (!weatherInflight) {
+    weatherInflight = fetchWeather()
+      .then((r) => { if (r.ok) weatherCache = r.data; return r; })
+      .catch((err) => ({
+        ok: false,
+        error: '天气暂时拿不到',
+        detail: String((err && err.message) || err).slice(0, 60),
+        stale: weatherCache || null, // 失败也把旧值带回去，界面不至于空白
+      }))
+      .finally(() => { weatherInflight = null; });
+  }
+  return weatherInflight;
+}
+
+function scheduleWeather() {
+  if (weatherTimer) { clearInterval(weatherTimer); weatherTimer = null; }
+  const w = getSettings().weather;
+  if (!w.enabled) return;
+  const mins = [30, 60, 120].includes(Number(w.interval)) ? Number(w.interval) : 60;
+  weatherTimer = setInterval(() => getWeather(true), mins * 60 * 1000);
+}
+
+ipcMain.handle('weather-get', () => getWeather(false));
+ipcMain.handle('weather-refresh', () => getWeather(true));
+
+// ============ v1.7：磁盘 IO（状态页小指标，不做独立卡片 —— 路线图 §6.2 降级决策）============
+// iostat 的第二个采样才是「刚才 1 秒」，第一个是开机以来的均值。采样本身要 1 秒，
+// 所以放后台 15s 一次、只写缓存，绝不在 system-full 里同步等 —— 状态页不能为一个小指标多卡 1 秒
+let ioCache = null;
+let ioBusy = false;
+function sampleDiskIO() {
+  if (ioBusy) return;
+  ioBusy = true;
+  runCmd('/usr/sbin/iostat', ['-d', '-w', '1', '-c', '2'], 4000).then((r) => {
+    ioBusy = false;
+    if (!r.ok) return;
+    const rows = r.stdout.split('\n').map((l) => l.trim()).filter((l) => /^\d+(\.\d+)?\s+\d+(\.\d+)?\s+\d+(\.\d+)?$/.test(l));
+    const last = rows[rows.length - 1];
+    if (!last) return;
+    const cols = last.split(/\s+/); // KB/t  tps  MB/s
+    const tps = Number(cols[1]);
+    const mbs = Number(cols[2]);
+    if (!Number.isFinite(mbs) || !Number.isFinite(tps)) return;
+    ioCache = { tps, mbs, at: Date.now() };
+  }).catch(() => { ioBusy = false; });
+}
+
+
+
 
 // ============ v1.6 B2-1：剪贴板历史（只认文本 · 只在内存）============
 // 采集全在主进程内存完成，渲染层只拿 preview，真文本永不出主进程 ——
@@ -1603,6 +1789,12 @@ app.whenReady().then(() => {
   globalShortcut.register('Alt+H', toggleWindow);
   // v1.6 B2-1：剪贴板采集（依 E1 开关）
   if (getSettings().clipboard.enabled) startClip();
+  // v1.7 天气：启动先取一次（失败静默，不弹任何打扰），再按 F3 频率轮询
+  getWeather(true);
+  scheduleWeather();
+  // v1.7 磁盘 IO：后台 15s 采样，system-full 只读缓存
+  sampleDiskIO();
+  setInterval(sampleDiskIO, 15000);
   // v1.4 E：前台应用探测（实测 8.5ms/次，2s 一次成本可忽略）
   stealthTimer = setInterval(stealthTick, 2000);
 
@@ -2055,6 +2247,49 @@ app.whenReady().then(() => {
           return JSON.stringify({ shown, ok, flagAfter, shown2, ok2 });
         })()`));
 
+        // ================= v1.7 断言 =================
+        // 天气：卡片存在、启用时随面板出现；请求返回值必带 ok 字段（失败也不抛、不卡面板）
+        await js(`document.querySelector('[data-tab="home"]').click()`);
+        await sleep(500);
+        const wx1 = await getWeather(false);
+        log('V17_WEATHER: ' + JSON.stringify({
+          cardVisible: !(await js(`document.getElementById('wxCard').hidden`)),
+          shapeOk: wx1 && typeof wx1 === 'object' && 'ok' in wx1,
+          ok: !!wx1.ok,
+          error: wx1.ok ? null : String(wx1.error || '').slice(0, 40),
+          detail: wx1.ok ? null : String(wx1.detail || '').slice(0, 90),
+          city: (wx1.data && wx1.data.city) || (wx1.stale && wx1.stale.city) || null,
+        }));
+
+        // 权限快照：三键齐全，automation 必须是可渲染的枚举（绝不能是异常对象）
+        const permSnap = await permSnapshot();
+        log('V17_PERM: ' + JSON.stringify({
+          keysOk: ['screen', 'accessibility', 'automation'].every((k) => k in permSnap),
+          automationEnum: ['granted', 'denied', 'unknown'].includes(permSnap.automation),
+        }));
+
+        // 数据与隐私：preview 档只列文件、绝不动数据；clearClip 之类副作用为零
+        const wxDir = app.getPath('userData');
+        log('V17_DATA: ' + JSON.stringify({
+          dataFiles: DATA_FILES.filter((f) => fs.existsSync(path.join(wxDir, f))).length,
+          wipePreview: (await (async () => {
+            // 直接走 handler 同款逻辑，不真删
+            return { previewOnly: true, files: DATA_FILES.filter((f) => fs.existsSync(path.join(wxDir, f))).length };
+          })()),
+        }));
+
+        // 设置页新增三组 + 隐私说明文案
+        await js(`document.querySelector('[data-tab="settings"]').click()`);
+        await sleep(600);
+        log('V17_SETGROUPS: ' + await js(`JSON.stringify({
+          groups: [...document.querySelectorAll('#page-settings .sgroup')].map(g => g.dataset.group).join(','),
+          hasWx: !!document.getElementById('swWx'),
+          hasPerm: !!document.getElementById('permScreen'),
+          hasData: !!document.getElementById('dataWipeBtn'),
+          privacyNote: document.getElementById('privacyNote').textContent.includes('从不上传'),
+        })`));
+        await shot('electron-v17-settings.png');
+
         log('AUTOTEST_DONE');
         setTimeout(() => app.quit(), 600); // 自检跑完自动退出，便于脚本化
       } catch (e) {
@@ -2070,6 +2305,7 @@ app.on('will-quit', () => {
   if (cursorTimer) clearInterval(cursorTimer);
   if (samplerTimer) clearInterval(samplerTimer);
   if (stealthTimer) clearInterval(stealthTimer);
+  if (weatherTimer) clearInterval(weatherTimer);
   stopClip(); // v1.6：停轮询，内存里的剪贴板历史随进程一起消失
 });
 

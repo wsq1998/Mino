@@ -5,7 +5,7 @@
 const bridge = (window.mio && typeof window.mio.getStats === 'function') ? window.mio : null;
 // 浏览器预览模式的设置副本，让开关能真的拨动（含深合并，模拟主进程行为）
 const previewSettings = {
-  _v: 3,
+  _v: 4,
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
   chime: { enabled: true, from: 9, to: 22, notify: false },
@@ -17,9 +17,10 @@ const previewSettings = {
   capture: { mode: 'region', dest: 'clipboard' },
   hotkey: { trigger: 'Alt+Space' },
   consent: { permsIntroSeen: false },
+  weather: { enabled: true, city: null, interval: 60, unit: 'c' },
   isPackaged: false, loginItem: false,
   stealthApps: [{ id: 'com.colliderli.iina', name: 'IINA' }, { id: 'org.videolan.vlc', name: 'VLC' }],
-  version: '1.6.0', userDataPath: '~/Library/Application Support/Mio',
+  version: '1.7.0', userDataPath: '~/Library/Application Support/Mio',
 };
 function previewMerge(base, patch) {
   const out = { ...base };
@@ -160,7 +161,7 @@ function escHtml(s) {
 // 声明放在前面：tickClock 会在启动阶段立即调用 chimeTick，不能等到文件末尾才初始化
 const pad2 = (n) => String(n).padStart(2, '0');
 // 只有这些键属于「设置」，其余是 meta（isPackaged / version …），不能混进 settings
-const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent'];
+const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather'];
 let settings = {
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
@@ -173,6 +174,7 @@ let settings = {
   capture: { mode: 'region', dest: 'clipboard' },
   hotkey: { trigger: 'Alt+Space' },
   consent: { permsIntroSeen: false },
+  weather: { enabled: true, city: null, interval: 60, unit: 'c' },
 };
 let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '', displays: [], permissions: null, hotkeyRegistered: true };
 let gazeEnabled = true; // 视线跟随开关，由 appearance.gaze 决定
@@ -270,6 +272,25 @@ function renderSettings() {
   if (segPW) [...segPW.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === String(settings.pomodoro.work)));
   renderKeyRec();
 
+  // v1.7：天气 / 权限 / 数据与隐私
+  const wx = settings.weather || {};
+  set('swWx', wx.enabled);
+  const segWxM = el('segWxMode');
+  const wxMode = wx.city ? 'manual' : 'auto';
+  if (segWxM) [...segWxM.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === wxMode));
+  if (el('wxCityInput')) {
+    el('wxCityInput').hidden = wxMode !== 'manual';
+    if (document.activeElement !== el('wxCityInput')) el('wxCityInput').value = wx.city || '';
+  }
+  if (el('wxLocatedNote')) el('wxLocatedNote').textContent = wxMode === 'manual'
+    ? '以你填写的城市为准，不再做 IP 定位'
+    : '当前由 IP 定位到城市级，精度对「今天要不要带伞」够用';
+  const segWxI = el('segWxInterval');
+  if (segWxI) [...segWxI.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === String(wx.interval)));
+  const segWxU = el('segWxUnit');
+  if (segWxU) [...segWxU.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === (wx.unit || 'c')));
+  if (el('dataPath')) el('dataPath').textContent = settingsMeta.userDataPath || '—';
+
   // 折叠标题上的摘要：收起时也能一眼看到状态
   const h = settings.health;
   const n = [h.sit, h.water, h.eye].filter(Boolean).length;
@@ -280,6 +301,9 @@ function renderSettings() {
     stealth: settings.stealth.enabled ? `${apps.length} 个` : '关',
     clipboard: settings.clipboard.enabled ? `开 · ${settings.clipboard.limit} 条${settings.clipboard.filterPassword ? ' · 过滤' : ''}` : '关',
     hotkey: accelLabel(settings.hotkey.trigger),
+    weather: wx.enabled ? `${wx.city || '自动定位'} · ${wx.interval} 分` : '关',
+    perm: permBrief(),
+    data: settingsMeta.userDataPath ? '全部在本机' : '—',
     about: settingsMeta.version ? `v${settingsMeta.version}` : '—',
   };
   Object.keys(briefs).forEach((k) => {
@@ -507,6 +531,7 @@ function togglePanel() {
     refreshMessages();
     refreshClip();      // v1.6
     refreshTrashBtn();  // v1.6
+    refreshWeatherCard(); // v1.7：天气（启用时才显示，失败不挡其余卡片）
   } else {
     // 收起面板：退出详情页、重置扫描缓存（下次展开重新扫）
     closeDetail();
@@ -686,6 +711,71 @@ async function refreshStats() {
   document.getElementById('quickStats').textContent = `${s.cpu}% · ${s.mem}%`;
 }
 setInterval(refreshStats, 5000);
+
+// ============ v1.7：天气卡片（失败绝不卡面板：出错保留旧值 + 一行可读提示） ============
+let wxRefreshing = false;
+async function refreshWeatherCard(force = false) {
+  const card = document.getElementById('wxCard');
+  if (!card) return;
+  if (!settings.weather || !settings.weather.enabled) { card.hidden = true; return; }
+  if (!panelOpen && !force) return; // 面板收起时静默，不浪费请求
+  card.hidden = false;
+  if (wxRefreshing) return;
+  wxRefreshing = true;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  try {
+    const r = force ? await api.refreshWeather() : await api.getWeather();
+    const d = r && (r.data || (r && r.stale));
+    if (d) {
+      set('wxCity', `· ${d.city}${d.auto ? '（定位）' : ''}`);
+      set('wxIcon', d.icon);
+      set('wxTemp', `${d.temp}${d.unit}`);
+      set('wxDesc', `${d.desc} · 体感 ${d.feels}${d.unit} · 湿度 ${d.humidity == null ? '—' : d.humidity + '%'} · 风 ${d.wind}km/h`);
+      set('wxHint', d.hint || '');
+      const errEl = document.getElementById('wxErr');
+      if (errEl) {
+        errEl.hidden = !!r.ok;
+        if (!r.ok && r.error) errEl.textContent = d === r.stale ? `${r.error}（以下是上次结果）` : r.error;
+      }
+    } else {
+      const errEl = document.getElementById('wxErr');
+      if (errEl) { errEl.hidden = false; errEl.textContent = (r && r.error) || '天气暂时拿不到，稍后再试'; }
+    }
+  } catch {
+    const errEl = document.getElementById('wxErr');
+    if (errEl) errEl.hidden = false;
+  }
+  wxRefreshing = false;
+}
+setInterval(() => refreshWeatherCard(false), 5 * 60 * 1000);
+
+// ============ v1.7：权限中心（复用 v1.6 的 perm-status 探测层，只检测 + 引导） ============
+const PERM_LABEL = {
+  granted: '✅ 已授权', denied: '❌ 未授权', 'not-determined': '⚠️ 未决定', unknown: '❔ 未知',
+};
+function permBrief() {
+  const p = settingsMeta.permissions;
+  if (!p) return '未检测';
+  const states = [p.screen, p.accessibility ? 'granted' : 'denied', p.automation];
+  return `${states.filter((s) => s === 'granted').length}/3 已授权`;
+}
+async function renderPerms() {
+  try {
+    const p = await api.permStatus();
+    if (p && p.ok) {
+      settingsMeta.permissions = p;
+      const put = (id, v) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = PERM_LABEL[v] || (v ? PERM_LABEL.granted : PERM_LABEL.denied);
+      };
+      put('permScreen', p.screen);
+      put('permAccess', p.accessibility ? 'granted' : 'denied');
+      put('permAuto', p.automation);
+    }
+  } catch {}
+  renderSettings(); // 权限摘要随探测结果一起刷新
+}
+
 
 // ============ 标签页 ============
 document.querySelectorAll('.tab').forEach((tab) => {
@@ -1638,6 +1728,59 @@ bindRange('rngOpacity', ['appearance', 'opacity'],
 bindRange('rngStealthOpacity', ['stealth', 'opacity'],
   (v) => { const n = document.getElementById('stealthOpacityVal'); if (n) n.textContent = `${v}%`; },
   null, pctToUnit(0.05, 0.9));
+
+// ===== v1.7：天气（F 组） =====
+bindSwitch('swWx', ['weather', 'enabled'], () => refreshWeatherCard(true));
+bindSeg('segWxInterval', ['weather', 'interval']);
+bindSeg('segWxUnit', ['weather', 'unit']);
+// 「城市」不是一个直接的 settings 路径：auto = city:null，manual = 先等输入再落盘
+const segWxMode = document.getElementById('segWxMode');
+if (segWxMode) segWxMode.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-v]');
+  if (!btn) return;
+  interact();
+  if (btn.dataset.v === 'auto') {
+    patchSettings({ weather: { city: null } }, () => refreshWeatherCard(true));
+  } else {
+    const inp = document.getElementById('wxCityInput');
+    if (inp) { inp.hidden = false; inp.focus(); }
+  }
+});
+const wxCityInput = document.getElementById('wxCityInput');
+if (wxCityInput) wxCityInput.addEventListener('change', () => {
+  interact();
+  const city = wxCityInput.value.trim();
+  patchSettings({ weather: { city: city || null } }, () => refreshWeatherCard(true));
+});
+const wxRefreshBtn = document.getElementById('wxRefresh');
+if (wxRefreshBtn) wxRefreshBtn.addEventListener('click', () => { interact(); refreshWeatherCard(true); });
+
+// ===== v1.7：权限中心（I 组，复用 perm-open 深链） =====
+[['permGoScreen', 'screen'], ['permGoAccess', 'accessibility'], ['permGoAuto', 'automation']].forEach(([id, which]) => {
+  const btn = document.getElementById(id);
+  if (btn) btn.addEventListener('click', () => { interact(); api.permOpen({ which }); });
+});
+const permRefreshBtn = document.getElementById('permRefresh');
+if (permRefreshBtn) permRefreshBtn.addEventListener('click', () => { interact(); renderPerms(); });
+
+// ===== v1.7：数据与隐私（H 组） =====
+const dataShowBtn = document.getElementById('dataShowBtn');
+if (dataShowBtn) dataShowBtn.addEventListener('click', () => { interact(); api.showDataFolder(); });
+const dataWipeBtn = document.getElementById('dataWipeBtn');
+if (dataWipeBtn) dataWipeBtn.addEventListener('click', async () => {
+  interact();
+  const preview = await api.wipeData('preview'); // 先列出会被清除的文件，确认弹层里亮出来
+  const files = (preview && preview.files) || [];
+  const ok = await showConfirm({
+    title: '清除所有本地数据？',
+    body: `将把 ${files.length} 个数据文件移入废纸篓：全部设置、24h 采样、消息中心、清理历史。重启 Mio 后生效；文件可在废纸篓找回，但当前配置会重置。`,
+    okText: '移入废纸篓',
+  });
+  if (!ok) return;
+  const r = await api.wipeData('run');
+  if (r && r.ok) say(`已清除 ${r.wiped} 个文件，重启 Mio 后生效`);
+  else say('清除失败，文件可能正被占用');
+});
 
 const selDisplay = document.getElementById('selDisplay');
 if (selDisplay) {

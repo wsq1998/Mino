@@ -30,6 +30,19 @@
         <div id="clock" class="clock">--:--</div>
         <div id="dateLine" class="sub">—</div>
       </div>
+      <!-- v1.7 F：天气卡片（wttr.in 免 key） -->
+      <div class="card" id="wxCard" hidden>
+        <div class="label">天气 <span class="sub-inline" id="wxCity"></span>
+          <span class="expand-hint clickable" id="wxRefresh" title="刷新">↻</span>
+        </div>
+        <div class="wx-row">
+          <span id="wxIcon" class="wx-icon">—</span>
+          <span id="wxTemp" class="wx-temp">—</span>
+        </div>
+        <div id="wxDesc" class="sub">—</div>
+        <div id="wxHint" class="sub"></div>
+        <div id="wxErr" class="sub warn-text" hidden>天气暂时拿不到，稍后再试</div>
+      </div>
       <div class="row">
         <div class="card half interactive-btn" id="pomodoroCard">
           <div class="label">番茄钟 <span id="pomoDot" class="dot"></span></div>
@@ -329,6 +342,62 @@
         </div>
       </details>
 
+      <!-- v1.7 I 组：权限中心（检测 + 深链，探测零权限） -->
+      <details class="sgroup" data-group="perm">
+        <summary class="sgroup-h"><span class="sg-name">权限</span><span class="sg-brief" id="sgBrief-perm"></span></summary>
+        <div class="sgroup-b">
+          <div class="perm-row"><span>屏幕录制 <span class="perm-use">截图</span></span>
+            <span class="perm-cell"><span class="perm-badge" id="permScreen">—</span><button class="btn tiny" id="permGoScreen">去开启</button></span>
+          </div>
+          <div class="perm-row"><span>辅助功能 <span class="perm-use">真锁屏</span></span>
+            <span class="perm-cell"><span class="perm-badge" id="permAccess">—</span><button class="btn tiny" id="permGoAccess">去开启</button></span>
+          </div>
+          <div class="perm-row"><span>自动化（控制访达） <span class="perm-use">清空废纸篓</span></span>
+            <span class="perm-cell"><span class="perm-badge" id="permAuto">—</span><button class="btn tiny" id="permGoAuto">去开启</button></span>
+          </div>
+          <div class="set-note">只做状态检测与引导，不会替你改任何系统设置；被拒的功能会自动降级，其余能力不受影响</div>
+          <div class="stealth-actions"><button class="btn tiny" id="permRefresh">重新检测</button></div>
+        </div>
+      </details>
+
+      <!-- v1.7 H 组：数据与隐私（分发信任基础设施） -->
+      <details class="sgroup" data-group="data">
+        <summary class="sgroup-h"><span class="sg-name">数据与隐私</span><span class="sg-brief" id="sgBrief-data"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>数据存放位置</span><span class="set-val ellip" id="dataPath">—</span></div>
+          <div class="stealth-actions"><button class="btn tiny" id="dataShowBtn">在访达中显示</button></div>
+          <div class="set-note" id="privacyNote">Mio 的 CPU / 内存 / 磁盘 / 电池 / 剪贴板数据<b>全部只在本机处理，从不上传</b>。唯一会联网的两项：① 天气（只把城市名发给 wttr.in）② 未来开启 AI 对话后（发送你输入的内容到你配置的服务商）。</div>
+          <div class="set-row"><span>清除所有本地数据</span><button class="btn tiny danger" id="dataWipeBtn">清除…</button></div>
+          <div class="set-note">重置全部设置、采样、消息与清理历史（移入废纸篓，可在废纸篓找回）。<b>需要重启 Mio 才生效</b>，操作前会二次确认。</div>
+        </div>
+      </details>
+
+      <!-- v1.7 F 组：天气 -->
+      <details class="sgroup" data-group="weather">
+        <summary class="sgroup-h"><span class="sg-name">天气</span><span class="sg-brief" id="sgBrief-weather"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>天气卡片</span><label class="switch"><input type="checkbox" id="swWx"><i></i></label></div>
+          <div class="set-row"><span>城市</span>
+            <div class="seg" id="segWxMode">
+              <button data-v="auto">自动定位</button><button data-v="manual">手动填写</button>
+            </div>
+          </div>
+          <input type="text" id="wxCityInput" class="stext" placeholder="如：上海 / Beijing" maxlength="40" hidden>
+          <div class="set-note" id="wxLocatedNote">—</div>
+          <div class="set-row"><span>更新频率</span>
+            <div class="seg" id="segWxInterval">
+              <button data-v="30">30 分</button><button data-v="60">60 分</button><button data-v="120">2 小时</button>
+            </div>
+          </div>
+          <div class="set-row"><span>温度单位</span>
+            <div class="seg" id="segWxUnit">
+              <button data-v="c">℃</button><button data-v="f">℉</button>
+            </div>
+          </div>
+          <div class="set-note">数据源 wttr.in，免注册免 key；只把城市名发出去，其余一律本机处理</div>
+        </div>
+      </details>
+
       <details class="sgroup" data-group="about">
         <summary class="sgroup-h"><span class="sg-name">关于</span><span class="sg-brief" id="sgBrief-about"></span></summary>
         <div class="sgroup-b">
@@ -339,7 +408,7 @@
         </div>
       </details>
 
-      <div class="set-more" id="setMore">天气 · AI 助手 · 权限中心 · 数据与隐私，将随后续版本陆续加入</div>
+      <div class="set-more" id="setMore">定时清理计划 · 重复文件查重 · AI 助手 · 首次引导，将随后续版本陆续加入</div>
     </div>
     </div>
 

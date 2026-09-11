@@ -1098,6 +1098,35 @@ body.theme-light .switch:hover i { border-color: rgba(17, 24, 39, 0.26); }
 }
 .btn.tiny:hover { background: rgba(133, 183, 235, 0.24); }
 
+/* ---- v1.7 天气卡片 ---- */
+.wx-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
+.wx-icon { font-size: 30px; line-height: 1; }
+.wx-temp { font-size: 26px; font-weight: 600; color: var(--mi-tx1); }
+.expand-hint.clickable { cursor: pointer; padding: 0 4px; border-radius: 5px; }
+.expand-hint.clickable:hover { color: var(--mi-accent); background: rgba(var(--mi-overlay-rgb), 0.08); }
+.warn-text { color: #E8B04B; }
+
+/* ---- v1.7 权限中心 ---- */
+.perm-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 6px 0; border-bottom: 0.5px solid rgba(var(--mi-overlay-rgb), 0.06);
+}
+.perm-use { font-size: 10px; color: var(--mi-tx4); }
+.perm-cell { display: flex; align-items: center; gap: 6px; }
+.perm-badge { font-size: 11px; color: var(--mi-tx2); white-space: nowrap; }
+.perm-row .btn.tiny { flex: 0 0 auto; padding: 4px 10px; }
+
+/* ---- v1.7 数据与隐私 ---- */
+.stext {
+  width: 100%; margin: 4px 0 6px; padding: 6px 9px;
+  font-size: 12px; font-family: inherit; color: var(--mi-tx1);
+  background: rgba(var(--mi-overlay-rgb), 0.06);
+  border: 0.5px solid rgba(var(--mi-overlay-rgb), 0.14);
+  border-radius: 8px; outline: none;
+}
+.stext:focus { border-color: rgba(133, 183, 235, 0.5); }
+.set-val.ellip { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---- 减弱动效：尊重无障碍偏好，同时省电 ---- */
 body.reduce-motion *,
 body.reduce-motion *::before,

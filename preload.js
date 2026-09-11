@@ -66,4 +66,11 @@ contextBridge.exposeInMainWorld('mio', {
   // B2-3 召唤快捷键（原子注册 + 回滚）
   hotkeyRecord: (accelerator) => ipcRenderer.invoke('hotkey-record', { accelerator }),
   hotkeyReset: () => ipcRenderer.invoke('hotkey-reset'),
+  // ===== v1.7 新增 =====
+  // 天气（wttr.in 免 key，城市走 IP 定位或手动）
+  getWeather: () => ipcRenderer.invoke('weather-get'),
+  refreshWeather: () => ipcRenderer.invoke('weather-refresh'),
+  // 数据与隐私：wipe 传 'preview' 只列出会被清除的文件，传 'run' 才移入废纸篓
+  wipeData: (mode) => ipcRenderer.invoke('data-wipe', mode),
+  showDataFolder: () => ipcRenderer.invoke('data-show'),
 });
