@@ -1,9 +1,9 @@
 // Mio - macOS 桌面陪伴机器人 · 主进程
-const { app, BrowserWindow, ipcMain, Menu, Notification, globalShortcut, screen, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, Notification, globalShortcut, screen, shell, clipboard, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execSync, exec } = require('child_process');
+const { execSync, exec, execFile, execFileSync } = require('child_process');
 
 const WIN_W = 320;
 const WIN_W_WIDE = 440; // v1.2 详情档：面板 360px + 两侧边距
@@ -30,9 +30,11 @@ function saveState(patch) {
 // settings 自 v1.5 起带版本号（_v）。升级靠 deepMerge 而非逐版 migration 函数：
 // 默认值是「骨架」，用户配置叠上去，缺失字段自动补齐 —— v1.4 只有 chime/health/stealth
 // 三组，读进来就会自动长出 general/appearance 等新组，老配置文件零改动可用。
-const SETTINGS_VERSION = 2;
+// v1.6 再叠一层：clipboard/capture/hotkey/pomodoro/consent 五个新区，老键名一个不动。
+const SETTINGS_VERSION = 3;
 
 const DEFAULT_SETTINGS = {
+  _v: 3,
   general: { autoOpen: false },
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
@@ -46,8 +48,16 @@ const DEFAULT_SETTINGS = {
   },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
-  notify: { style: 'bubble' }, // bubble | system | both
+  // v1.6 C9：通知方式默认「两者」，保持 v1.5「系统通知 + 气泡」的既有行为，
+  // 避免升级后默认通道变了让老用户以为提醒消失（PRD Q8）
+  notify: { style: 'both' }, // bubble | system | both
+  pomodoro: { work: 25 },    // v1.6 C10：25 | 45 | 60（分钟）
   stealth: { enabled: true, opacity: 0.12, apps: null }, // apps=null → 用内置名单
+  // ===== v1.6 新增分组 =====
+  clipboard: { enabled: true, limit: 10, filterPassword: false }, // E1/E2/E3
+  capture: { mode: 'region', dest: 'clipboard' },                 // E4（dest 本版恒为剪贴板）
+  hotkey: { trigger: 'Alt+Space' },                                // D1（Electron accelerator 规范串）
+  consent: { permsIntroSeen: false },                              // 统一说明弹层「只弹一次」标志
 };
 
 // 深合并：base 作骨架，patch 覆盖其上；数组整体替换（不逐项合并）
@@ -1099,7 +1109,7 @@ function stealthTick() {
 const readLoginItem = () => { try { return app.getLoginItemSettings().openAtLogin; } catch { return false; } };
 
 // 设置读写：patch 只带改动的那一枝即可（深合并），不必回传整棵树
-ipcMain.handle('settings-get', () => ({
+ipcMain.handle('settings-get', async () => ({
   ...getSettings(),
   isPackaged: app.isPackaged,
   loginItem: readLoginItem(),
@@ -1109,6 +1119,13 @@ ipcMain.handle('settings-get', () => ({
   userDataPath: app.getPath('userData'),
   displays: displayList(),
   lastFrontApp: lastForeignFront,
+  // v1.6：权限快照（仅状态枚举，绝不含任何明文）；automation 走缓存探测避免每次卡 4s
+  permissions: {
+    screen: screenStatus(),
+    accessibility: accessibilityTrusted(false),
+    automation: await probeFinder(true),
+  },
+  hotkeyRegistered,
 }));
 
 ipcMain.handle('settings-set', (_e, patch) => {
@@ -1124,7 +1141,22 @@ ipcMain.handle('settings-set', (_e, patch) => {
   if (stealthActive && before.stealth.opacity !== next.stealth.opacity) {
     try { win.setOpacity(clamp(Number(next.stealth.opacity) || 0.12, 0, 0.9)); } catch {}
   }
-  return { ...next, loginItem: readLoginItem(), stealthApps: stealthList(), lastFrontApp: lastForeignFront };
+  // v1.6 E1/E2：剪贴板开关即时启停采集（关闭同时清空列表）；条数改小立即裁剪
+  if (before.clipboard.enabled !== next.clipboard.enabled) {
+    if (next.clipboard.enabled) startClip();
+    else { stopClip(); clearClip(); }
+  }
+  if (Number(before.clipboard.limit) !== Number(next.clipboard.limit)) {
+    enforceLimit();
+    broadcastClip();
+  }
+  return {
+    ...next,
+    loginItem: readLoginItem(),
+    stealthApps: stealthList(),
+    lastFrontApp: lastForeignFront,
+    hotkeyRegistered,
+  };
 });
 
 // 可选显示器清单（设置页的「显示在哪块屏幕」）
@@ -1160,10 +1192,399 @@ ipcMain.handle('login-set', (_e, enabled) => {
   }
 });
 
+// ============ v1.6 B2-1：剪贴板历史（只认文本 · 只在内存）============
+// 采集全在主进程内存完成，渲染层只拿 preview，真文本永不出主进程 ——
+// 零落盘天然满足隐私可验证要求：userData grep 无内容、退出即归零
+let clipItems = [];      // ClipItem[]，index 0 = 最新
+let clipPaused = false;  // 不落盘（Q5）
+let clipTimer = null;    // 800ms 轮询句柄
+let clipLastText = '';   // 相邻去重 + 取回防重入基线
+let clipSeq = 0;         // id 递增序号
+let clipNoticeAt = 0;    // 密码过滤轻提示节流时间戳
+const CLIP_MAX_PIN = 3;          // 钉住上限（Q2）
+const CLIP_NOTICE_GAP = 30 * 1000; // 过滤提示最小间隔（Q3）
+const CLIP_PREVIEW_LEN = 120;      // 出渲染层的预览截断长度
+
+const clipPreview = (text) => {
+  const one = String(text).replace(/\s+/g, ' ').trim();
+  return one.length > CLIP_PREVIEW_LEN ? one.slice(0, CLIP_PREVIEW_LEN) + '…' : one;
+};
+
+// 密码启发式：8–64 位、无空白、同时含大小写与数字。必然误伤（如 MyPassw0rd），故默认关闭
+const isPasswordLike = (text) => {
+  const t = String(text);
+  if (t.length < 8 || t.length > 64) return false;
+  if (/\s/.test(t)) return false;
+  return /[a-z]/.test(t) && /[A-Z]/.test(t) && /\d/.test(t);
+};
+
+// 出渲染层的形状：只给 preview，不给全文
+const clipPublic = (it) => ({ id: it.id, preview: clipPreview(it.text), pinned: it.pinned, t: it.t });
+
+function clipSnapshot() {
+  const s = getSettings().clipboard;
+  return {
+    ok: true,
+    items: clipItems.map(clipPublic),
+    paused: clipPaused,
+    enabled: !!s.enabled,
+    limit: Number(s.limit) || 10,
+    pinnedCount: clipItems.filter((i) => i.pinned).length,
+  };
+}
+
+// 数据一变就推事件，渲染层据此拉最新列表（消息面很小：只有 count/paused）
+function broadcastClip() {
+  if (win && !win.isDestroyed()) win.webContents.send('clip-changed', { count: clipItems.length, paused: clipPaused });
+}
+
+// 上限裁剪：limit 是「总数上限」（含钉住条）。从尾部找最旧的未钉条剔除；
+// 若全部已钉（≤3 条）则不再剔除，钉住条只抵抗顶替、不额外占名额
+function enforceLimit() {
+  const limit = Number(getSettings().clipboard.limit) || 10;
+  while (clipItems.length > limit) {
+    let idx = -1;
+    for (let i = clipItems.length - 1; i >= 0; i--) {
+      if (!clipItems[i].pinned) { idx = i; break; }
+    }
+    if (idx === -1) break; // 全是钉住条，停止裁剪
+    clipItems.splice(idx, 1);
+  }
+}
+
+function addClip(text) {
+  const s = getSettings().clipboard;
+  if (!s.enabled || clipPaused) return;              // 关闭 / 暂停 → 不采集
+  if (typeof text !== 'string' || text.trim() === '') return; // 空串 / 纯空白 → 丢弃
+  if (s.filterPassword && isPasswordLike(text)) {
+    // 只跳过采集、不动系统剪贴板；节流回轻提示，避免每次复制都弹
+    const now = Date.now();
+    if (now - clipNoticeAt >= CLIP_NOTICE_GAP) {
+      clipNoticeAt = now;
+      if (win && !win.isDestroyed()) win.webContents.send('clip-notice', { kind: 'filtered' });
+    }
+    return;
+  }
+  // 完全相同文本已在列表 → 不新增，改置顶（钉住条原地不动）
+  const same = clipItems.find((i) => i.text === text);
+  if (same) {
+    if (!same.pinned) {
+      clipItems.splice(clipItems.indexOf(same), 1);
+      clipItems.unshift(same);
+      broadcastClip();
+    }
+    return;
+  }
+  clipItems.unshift({ id: 'c_' + (++clipSeq), text, pinned: false, t: Date.now() });
+  enforceLimit();
+  broadcastClip();
+}
+
+// 轮询：与上一条逐字符比较去重（不引 crypto/hash）
+function clipPoll() {
+  let text = '';
+  try { text = clipboard.readText(); } catch { return; }
+  if (text === clipLastText) return;
+  clipLastText = text;
+  addClip(text);
+}
+
+function startClip() {
+  if (clipTimer) return;
+  try { clipLastText = clipboard.readText(); } catch { clipLastText = ''; } // 起跑先记基线，已有剪贴板内容不补采
+  clipTimer = setInterval(clipPoll, 800);
+}
+
+function stopClip() {
+  if (clipTimer) { clearInterval(clipTimer); clipTimer = null; }
+}
+
+function clearClip() {
+  clipItems = [];
+  broadcastClip();
+}
+
+// 暂停/恢复：暂停不清空历史；恢复后把当前剪贴板记为基线，暂停期间的旧值不补进列表
+function setClipPaused(paused) {
+  clipPaused = !!paused;
+  try { clipLastText = clipboard.readText(); } catch {}
+  broadcastClip();
+}
+
+function clipCopy(id) {
+  const item = clipItems.find((i) => i.id === id);
+  if (!item) return { ok: false, error: '条目已不存在' };
+  try { clipboard.writeText(item.text); } catch { return { ok: false, error: '写入剪贴板失败' }; }
+  clipLastText = item.text; // 取回后立即更新基线，防轮询把同一条重复入库
+  if (!item.pinned) {
+    clipItems.splice(clipItems.indexOf(item), 1);
+    clipItems.unshift(item); // 取回即置顶
+  }
+  broadcastClip();
+  return { ok: true, preview: clipPreview(item.text) };
+}
+
+function clipPin(id) {
+  const item = clipItems.find((i) => i.id === id);
+  if (!item) return { ok: false, error: '条目已不存在' };
+  if (!item.pinned) {
+    if (clipItems.filter((i) => i.pinned).length >= CLIP_MAX_PIN) {
+      return { ok: false, error: '最多钉 3 条，先取消一条' };
+    }
+    item.pinned = true;
+  }
+  broadcastClip();
+  return { ok: true, pinnedCount: clipItems.filter((i) => i.pinned).length };
+}
+
+function clipUnpin(id) {
+  const item = clipItems.find((i) => i.id === id);
+  if (item) item.pinned = false;
+  broadcastClip();
+  return { ok: true, pinnedCount: clipItems.filter((i) => i.pinned).length };
+}
+
+function clipDelete(id) {
+  clipItems = clipItems.filter((i) => i.id !== id);
+  broadcastClip();
+  return { ok: true };
+}
+
+ipcMain.handle('clip-list', () => clipSnapshot());
+ipcMain.handle('clip-copy', (_e, payload) => clipCopy(payload && payload.id));
+ipcMain.handle('clip-pin', (_e, payload) => clipPin(payload && payload.id));
+ipcMain.handle('clip-unpin', (_e, payload) => clipUnpin(payload && payload.id));
+ipcMain.handle('clip-delete', (_e, payload) => clipDelete(payload && payload.id));
+ipcMain.handle('clip-clear', () => { clearClip(); return { ok: true }; });
+ipcMain.handle('clip-pause', (_e, payload) => {
+  setClipPaused(payload && payload.paused);
+  return { ok: true, paused: clipPaused };
+});
+
+// ============ v1.6 B2-2：权限服务（TCC 探测 + 深链）============
+const DEEP_LINKS = {
+  screen: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+  accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+  automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
+};
+
+// 屏幕录制态：零成本、不弹窗（askForMediaAccess 不支持 'screen'，弹窗只能靠真截图触发）
+function screenStatus() {
+  try { return systemPreferences.getMediaAccessStatus('screen'); } catch { return 'unknown'; }
+}
+// 辅助功能态：探测传 false 不弹窗；用户点「继续」后传 true 触发系统弹窗
+function accessibilityTrusted(prompt = false) {
+  try { return !!systemPreferences.isTrustedAccessibilityClient(!!prompt); } catch { return false; }
+}
+
+let finderProbeCache = { t: 0, v: 'unknown' };
+// 无 API 可查自动化权限，用无副作用 osascript 探测 + 错误码 -1743 判定
+function probeFinderRaw() {
+  return new Promise((resolve) => {
+    execFile('/usr/bin/osascript', ['-e', 'tell application "Finder" to get name of startup disk'],
+      { timeout: 4000 }, (err, _stdout, stderr) => {
+        if (!err) return resolve('granted');
+        const msg = String(stderr || (err && err.message) || '');
+        if (/-1743/.test(msg) || /Not authorized/i.test(msg)) return resolve('denied');
+        resolve('unknown'); // 如 -600（Finder 未运行）→ 放行到真实操作再判
+      });
+  });
+}
+// cached=true 时 3s 内复用（settings-get 用），perm-status 走实时探测
+async function probeFinder(cached = false) {
+  if (cached && Date.now() - finderProbeCache.t < 3000) return finderProbeCache.v;
+  const v = await probeFinderRaw();
+  finderProbeCache = { t: Date.now(), v };
+  return v;
+}
+
+function openPermSettings(which) {
+  const link = DEEP_LINKS[which];
+  if (!link) return false;
+  try { shell.openExternal(link); return true; } catch { return false; }
+}
+
+async function permSnapshot() {
+  return {
+    ok: true,
+    screen: screenStatus(),
+    accessibility: accessibilityTrusted(false),
+    automation: await probeFinder(false), // 实时探测
+  };
+}
+
+ipcMain.handle('perm-status', () => permSnapshot());
+ipcMain.handle('perm-request', (_e, payload) => {
+  const which = payload && payload.which;
+  if (which === 'accessibility') return { ok: true, status: accessibilityTrusted(true) };
+  if (which === 'screen') return { ok: true, status: screenStatus() }; // 屏幕录制弹窗只能靠真实截图触发
+  return { ok: false, error: '未知的权限类型' };
+});
+ipcMain.handle('perm-open', (_e, payload) => {
+  const ok = openPermSettings(payload && payload.which);
+  return ok ? { ok: true } : { ok: false, error: '无法打开系统设置' };
+});
+
+// ============ v1.6 B2-2：快捷操作三件套 ============
+// 真锁屏：模拟 ⌃⌘Q；未授权/失败 → 降级熄屏（pmset displaysleepnow），无破坏性、不二次确认
+function actLock() {
+  const trusted = accessibilityTrusted(false);
+  if (trusted) {
+    try {
+      execFileSync('/usr/bin/osascript',
+        ['-e', 'tell application "System Events" to keystroke "q" using {command down, control down}'],
+        { timeout: 4000 });
+      return { ok: true, locked: true, degraded: false, need: null };
+    } catch { /* 有权限但执行失败 → 同样走降级 */ }
+  }
+  let degraded = false;
+  try { execFileSync('/usr/bin/pmset', ['displaysleepnow'], { timeout: 4000 }); degraded = true; } catch {}
+  return { ok: true, locked: false, degraded, need: trusted ? null : 'accessibility' };
+}
+
+function runScreencapture(args) {
+  return new Promise((resolve) => {
+    // 用异步 execFile：选区/窗口模式要等用户操作，绝不能用 execFileSync 冻住主进程
+    execFile('/usr/sbin/screencapture', args, { timeout: 120000 }, (err) => resolve(err));
+  });
+}
+
+async function actScreenshot(mode) {
+  const m = ['region', 'full', 'window'].includes(mode) ? mode : (getSettings().capture.mode || 'region');
+  const status = screenStatus();
+  // 先探测：被拒/受限时根本不调 screencapture，避免拿到黑图（ACT-2 核心）
+  if (status === 'denied' || status === 'restricted') {
+    return { ok: false, need: 'screen', error: '没有屏幕录制权限，截图会是空白' };
+  }
+  const firstTime = status === 'not-determined';
+  let args;
+  if (m === 'window') {
+    args = ['-W', '-c'];
+  } else if (m === 'full') {
+    // 多屏下截「光标所在屏」（Q4）
+    const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const b = d.bounds;
+    args = ['-c', '-R', `${b.x},${b.y},${b.width},${b.height}`];
+  } else {
+    args = ['-i', '-c'];
+  }
+  const err = await runScreencapture(args);
+  if (err) {
+    if (err.code === 1) return { ok: true, canceled: true }; // Esc 取消 → 静默
+    return { ok: false, error: '截图没有完成，请再试一次' };
+  }
+  return { ok: true, blank: firstTime }; // not-determined 首次可能空白，提示重启
+}
+
+let trashSizeCache = { t: 0, data: null };
+async function trashSize() {
+  if (trashSizeCache.data && Date.now() - trashSizeCache.t < 30000) return trashSizeCache.data;
+  const dir = path.join(HOME, '.Trash');
+  let data = { ok: true, bytes: 0, count: 0 };
+  if (fs.existsSync(dir)) {
+    const { size, files } = await dirSize(dir, 6000);
+    data = { ok: true, bytes: size, count: files };
+  }
+  trashSizeCache = { t: Date.now(), data };
+  return data;
+}
+
+function countTrashItems() {
+  try { return fs.readdirSync(path.join(HOME, '.Trash')).length; } catch { return 0; }
+}
+
+// 清空废纸篓：走 Finder 原生「清空废纸篓」，绝不 rm。
+// 对已在废纸篓的文件再 trashItem 等于原地不动，故不能用 clean-execute 逐项处理。
+function emptyTrash() {
+  return new Promise((resolve) => {
+    const before = countTrashItems();
+    execFile('/usr/bin/osascript', ['-e', 'tell application "Finder" to empty the trash'],
+      { timeout: 60000 }, (err, _stdout, stderr) => {
+        const msg = String(stderr || (err && err.message) || '');
+        if (err && (/-1743/.test(msg) || /Not authorized/i.test(msg))) {
+          return resolve({ ok: false, need: 'automation', error: '需要「自动化 · 控制 Finder」权限' });
+        }
+        if (err) return resolve({ ok: false, need: null, error: '清空失败，请稍后再试' });
+        const after = countTrashItems();
+        const removed = Math.max(0, before - after);
+        trashSizeCache = { t: 0, data: null }; // 体积缓存失效
+        if (removed > 0) logMessage('Mio · 清理完成', `已清空废纸篓 ${removed} 项（Finder 原生清空）`);
+        resolve({ ok: true, removed, failed: after, need: null });
+      });
+  });
+}
+
+ipcMain.handle('act-lock', () => actLock());
+ipcMain.handle('act-screenshot', (_e, payload) => actScreenshot(payload && payload.mode));
+ipcMain.handle('trash-size', () => trashSize());
+ipcMain.handle('trash-empty', () => emptyTrash());
+
+// ============ v1.6 B2-3：召唤快捷键（录制器 + 原子回滚）============
+const DEFAULT_HOTKEY = 'Alt+Space';
+const RESERVED_HOTKEY = 'Alt+H'; // ⌥H 恒定兜底，不可覆盖
+let hotkeyRegistered = true;     // 召唤键是否成功注册（供 UI 提示）
+
+// 给错误文案用的可读组合（⌥Space / ⌘⇧M）
+function accelLabel(acc) {
+  if (!acc) return '—';
+  return String(acc)
+    .replace(/Command/g, '⌘').replace(/Control/g, '⌃').replace(/Alt/g, '⌥').replace(/Shift/g, '⇧')
+    .replace(/\+/g, '');
+}
+
+// 原子应用：unregister(旧) → register(新) → 失败则 register(旧) 回滚
+function applyHotkey(acc) {
+  const next = String(acc || '').trim();
+  if (!next) return { ok: false, error: '快捷键为空' };
+  if (next === RESERVED_HOTKEY) return { ok: false, error: '与手动隐藏键冲突' };
+  const current = getSettings().hotkey.trigger || DEFAULT_HOTKEY;
+  try { globalShortcut.unregister(current); } catch {}
+  let ok = false;
+  try { ok = globalShortcut.register(next, toggleWindow); } catch { ok = false; }
+  if (ok) {
+    patchSettings({ hotkey: { trigger: next } });
+    hotkeyRegistered = true;
+    return { ok: true, trigger: next };
+  }
+  // 注册失败（被占用）→ 回滚旧值
+  let restored = false;
+  try { restored = globalShortcut.register(current, toggleWindow); } catch { restored = false; }
+  hotkeyRegistered = restored;
+  return {
+    ok: false,
+    error: `这个组合被别的程序占用了，已还原为 ${accelLabel(current)}`,
+    trigger: current,
+    restored: current,
+  };
+}
+
+function resetHotkey() {
+  return applyHotkey(DEFAULT_HOTKEY);
+}
+
+// 启动注册：读 settings，失败（被占用）回退 ⌥Space，仍失败仅保留 ⌥H
+function registerHotkeyFromSettings() {
+  const saved = getSettings().hotkey.trigger || DEFAULT_HOTKEY;
+  let ok = false;
+  try { ok = globalShortcut.register(saved, toggleWindow); } catch { ok = false; }
+  if (!ok && saved !== DEFAULT_HOTKEY) {
+    try { ok = globalShortcut.register(DEFAULT_HOTKEY, toggleWindow); } catch { ok = false; }
+    if (ok) patchSettings({ hotkey: { trigger: DEFAULT_HOTKEY } });
+  }
+  hotkeyRegistered = ok;
+  return ok;
+}
+
+ipcMain.handle('hotkey-record', (_e, payload) => applyHotkey(payload && payload.accelerator));
+ipcMain.handle('hotkey-reset', () => resetHotkey());
+
 app.whenReady().then(() => {
   createWindow();
-  globalShortcut.register('Alt+Space', toggleWindow);
-  globalShortcut.register('Alt+H', toggleWindow); // v1.4 E：手动隐藏兜底
+  // v1.6 D1：按 settings 注册召唤键（失败回退 ⌥Space）；⌥H 恒定兜底、不可被覆盖
+  registerHotkeyFromSettings();
+  globalShortcut.register('Alt+H', toggleWindow);
+  // v1.6 B2-1：剪贴板采集（依 E1 开关）
+  if (getSettings().clipboard.enabled) startClip();
   // v1.4 E：前台应用探测（实测 8.5ms/次，2s 一次成本可忽略）
   stealthTimer = setInterval(stealthTick, 2000);
 
@@ -1429,6 +1850,176 @@ app.whenReady().then(() => {
         })`));
         await shot('electron-v14-status.png');
 
+        // ================= v1.6 断言 =================
+        // schema v3：新组长出、老键不丢
+        log('V16_SCHEMA: ' + JSON.stringify({
+          v: getSettings()._v,
+          hasNew: ['clipboard', 'capture', 'hotkey', 'pomodoro', 'consent'].every((k) => k in getSettings()),
+          oldKept: ['general', 'appearance', 'chime', 'health', 'notify', 'stealth'].every((k) => k in getSettings()),
+          notifyDefault: DEFAULT_SETTINGS.notify.style,
+          consentKey: 'permsIntroSeen' in getSettings().consent,
+        }));
+
+        // 剪贴板：FIFO / 钉住 / 暂停 / 删除 / 条数 / 密码过滤（全部在内存，停轮询排除干扰）
+        stopClip();
+        log('V16_CLIP_FIFO: ' + JSON.stringify((() => {
+          clearClip();
+          for (let i = 1; i <= 10; i++) addClip('MIO_CLIP_TEST_' + i);
+          const n10 = clipItems.length, top = clipItems[0].text, oldest = clipItems[clipItems.length - 1].text;
+          addClip('MIO_CLIP_TEST_11');
+          return { n10, top, oldest, n11: clipItems.length, droppedOldest: !clipItems.some((i) => i.text === 'MIO_CLIP_TEST_1') };
+        })()));
+        log('V16_CLIP_PIN: ' + JSON.stringify((() => {
+          clearClip();
+          for (let i = 1; i <= 3; i++) addClip('MIO_PIN_' + i);
+          const mid = clipItems[1]; clipPin(mid.id);
+          for (let i = 1; i <= 8; i++) addClip('MIO_NEW_' + i);
+          return { stillThere: clipItems.some((i) => i.id === mid.id), pinnedCount: clipItems.filter((i) => i.pinned).length };
+        })()));
+        log('V16_CLIP_PAUSE: ' + JSON.stringify((() => {
+          clearClip(); addClip('MIO_PAUSE_A');
+          setClipPaused(true);
+          const before = clipItems.length;
+          addClip('MIO_PAUSE_B');
+          const after = clipItems.length;
+          setClipPaused(false);
+          return { before, after, same: before === after };
+        })()));
+        log('V16_CLIP_DEL: ' + JSON.stringify((() => {
+          clearClip(); addClip('MIO_DEL_A'); addClip('MIO_DEL_B');
+          clipDelete(clipItems[0].id);
+          const afterDel = clipItems.length;
+          clearClip();
+          return { afterDel, afterClear: clipItems.length };
+        })()));
+        log('V16_CLIP_LIMIT: ' + JSON.stringify((() => {
+          clearClip();
+          for (let i = 1; i <= 20; i++) addClip('MIO_LIM_' + i);
+          patchSettings({ clipboard: { limit: 5 } });
+          enforceLimit();
+          const n = clipItems.length;
+          patchSettings({ clipboard: { limit: 10 } });
+          return { n };
+        })()));
+        log('V16_CLIP_PWDFILTER: ' + JSON.stringify((() => {
+          clearClip();
+          const defOff = DEFAULT_SETTINGS.clipboard.filterPassword === false;
+          patchSettings({ clipboard: { filterPassword: true } });
+          addClip('MyPassw0rd1');           // 命中启发式
+          const blocked = clipItems.length === 0;
+          addClip('hello world 这是一句普通文本');
+          const normalOk = clipItems.some((i) => i.text.includes('普通文本'));
+          patchSettings({ clipboard: { filterPassword: false } });
+          clearClip();
+          return { defOff, blocked, normalOk };
+        })()));
+        startClip(); // 恢复采集
+
+        // 权限探测返回枚举
+        log('V16_PERM: ' + await (async () => {
+          const snap = await permSnapshot();
+          return JSON.stringify({
+            screen: snap.screen,
+            screenOk: ['granted', 'denied', 'restricted', 'not-determined', 'unknown'].includes(snap.screen),
+            accessibility: snap.accessibility,
+            automation: snap.automation,
+            autoOk: ['granted', 'denied', 'unknown'].includes(snap.automation),
+          });
+        })());
+
+        // 废纸篓体积（复用 dirSize）
+        log('V16_TRASH: ' + JSON.stringify(await (async () => { const t = await trashSize(); return { ok: t.ok, bytes: t.bytes, count: t.count }; })()));
+
+        // 快捷键：保留键拒绝 + 占用回滚原子性
+        log('V16_HOTKEY_RESERVED: ' + JSON.stringify(applyHotkey(RESERVED_HOTKEY)));
+        log('V16_HOTKEY_ROLLBACK: ' + JSON.stringify((() => {
+          const cur = getSettings().hotkey.trigger;
+          const victim = 'Command+Alt+9';
+          globalShortcut.register(victim, toggleWindow); // 先占用
+          const r = applyHotkey(victim);                 // 应失败并回滚
+          const rolledBack = globalShortcut.isRegistered(cur);
+          globalShortcut.unregister(victim);
+          return { ok: r.ok, restored: r.restored, rolledBack, trigger: getSettings().hotkey.trigger };
+        })()));
+
+        // 剪贴板不落盘自检（userData 四文件不得出现测试文本）
+        log('V16_NOPERSIST: ' + JSON.stringify((() => {
+          const files = ['mio-state.json', 'mio-history.json', 'mio-messages.json', 'mio-clean-history.json'];
+          const leaked = [];
+          for (const f of files) {
+            try {
+              const c = fs.readFileSync(path.join(app.getPath('userData'), f), 'utf8');
+              if (/MIO_CLIP_TEST_|MIO_PIN_|MIO_DEL_|MIO_PAUSE_|MIO_LIM_/.test(c)) leaked.push(f);
+            } catch {}
+          }
+          return { leaked, clean: leaked.length === 0 };
+        })()));
+
+        // ===== v1.6 渲染层断言 =====
+        await js(`document.querySelector('[data-tab="settings"]').click()`);
+        await sleep(600);
+        log('V16_SETGROUPS: ' + await js(`JSON.stringify({
+          groups: [...document.querySelectorAll('#page-settings .sgroup')].map(g => g.dataset.group).join(','),
+          hasClipboard: !!document.getElementById('swClip'),
+          hasClipLimit: !!document.getElementById('segClipLimit'),
+          hasCapture: !!document.getElementById('segCapture'),
+          hasNotifyStyle: !!document.getElementById('segNotifyStyle'),
+          hasPomoWork: !!document.getElementById('segPomoWork'),
+          hasKeyRec: !!document.getElementById('keyRec'),
+          keyLabel: document.getElementById('keyRec').textContent,
+          briefs: ['clipboard','hotkey','notify'].map(k => (document.getElementById('sgBrief-' + k) || {}).textContent || '-').join(' | ')
+        })`));
+
+        // 首页剪贴板卡 + 快捷操作卡
+        await js(`document.querySelector('[data-tab="home"]').click()`);
+        await sleep(400);
+        log('V16_HOMEUI: ' + await js(`JSON.stringify({
+          clipCard: !!document.getElementById('clipCard'),
+          qaCard: !!document.getElementById('qaCard'),
+          qaBtns: ['qaLock','qaShot','qaTrash'].map(i => !!document.getElementById(i)).join('/'),
+          clipPause: !!document.getElementById('clipPauseBtn'),
+          introOverlay: !!document.getElementById('introOverlay')
+        })`));
+
+        // 快捷键映射表（keydown 事件 → 规范串）
+        log('V16_ACCEL: ' + await js(`(function(){
+          const mk = (o) => accelFromEvent(Object.assign({ code:'', metaKey:false, ctrlKey:false, altKey:false, shiftKey:false }, o));
+          return JSON.stringify({
+            cmdShiftM: mk({ code:'KeyM', metaKey:true, shiftKey:true }),
+            altSpace: mk({ code:'Space', altKey:true }),
+            modOnly: mk({ code:'AltLeft', altKey:true }),
+            noMod: mk({ code:'KeyA' }),
+            reserved: mk({ code:'KeyH', altKey:true })
+          });
+        })()`));
+
+        // 专注联动：focusMode → dndActive() 门控
+        log('V16_FOCUS: ' + await js(`(function(){
+          const prev = focusMode;
+          focusMode = true;  const on = dndActive();
+          focusMode = false; const off = dndActive();
+          focusMode = prev;
+          return JSON.stringify({ on, off });
+        })()`));
+
+        // 统一说明弹层「只弹一次」
+        log('V16_INTRO: ' + await js(`(async function(){
+          const seenBefore = settings.consent.permsIntroSeen;
+          settings.consent.permsIntroSeen = false;
+          const p = ensurePermIntro();
+          await new Promise(r => setTimeout(r, 150));
+          const shown = !document.getElementById('introOverlay').hidden;
+          document.getElementById('introGo').click();
+          const ok = await p;
+          const flagAfter = settings.consent.permsIntroSeen;
+          const p2 = ensurePermIntro();
+          await new Promise(r => setTimeout(r, 80));
+          const shown2 = !document.getElementById('introOverlay').hidden;
+          const ok2 = await p2;
+          settings.consent.permsIntroSeen = seenBefore;
+          return JSON.stringify({ shown, ok, flagAfter, shown2, ok2 });
+        })()`));
+
         log('AUTOTEST_DONE');
         setTimeout(() => app.quit(), 600); // 自检跑完自动退出，便于脚本化
       } catch (e) {
@@ -1444,6 +2035,7 @@ app.on('will-quit', () => {
   if (cursorTimer) clearInterval(cursorTimer);
   if (samplerTimer) clearInterval(samplerTimer);
   if (stealthTimer) clearInterval(stealthTimer);
+  stopClip(); // v1.6：停轮询，内存里的剪贴板历史随进程一起消失
 });
 
 // 桌宠不需要 dock 图标与多窗口

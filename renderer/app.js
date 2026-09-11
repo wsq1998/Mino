@@ -5,15 +5,21 @@
 const bridge = (window.mio && typeof window.mio.getStats === 'function') ? window.mio : null;
 // 浏览器预览模式的设置副本，让开关能真的拨动（含深合并，模拟主进程行为）
 const previewSettings = {
+  _v: 3,
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
-  notify: { style: 'bubble' },
+  notify: { style: 'both' },
+  pomodoro: { work: 25 },
   stealth: { enabled: true, opacity: 0.12, apps: null },
+  clipboard: { enabled: true, limit: 10, filterPassword: false },
+  capture: { mode: 'region', dest: 'clipboard' },
+  hotkey: { trigger: 'Alt+Space' },
+  consent: { permsIntroSeen: false },
   isPackaged: false, loginItem: false,
   stealthApps: [{ id: 'com.colliderli.iina', name: 'IINA' }, { id: 'org.videolan.vlc', name: 'VLC' }],
-  version: '1.5.0', userDataPath: '~/Library/Application Support/Mio',
+  version: '1.6.0', userDataPath: '~/Library/Application Support/Mio',
 };
 function previewMerge(base, patch) {
   const out = { ...base };
@@ -111,6 +117,32 @@ const api = bridge || {
     { id: '2', label: 'DELL U2720Q · 2560×1440' },
   ]),
   stealthCapture: async () => ({ ok: false, error: '浏览器预览模式不支持' }),
+  // ===== v1.6 降级 mock =====
+  clipList: async () => ({
+    ok: true,
+    items: [
+      { id: 'c_3', preview: 'https://example.com/docs/getting-started', pinned: false, t: Date.now() },
+      { id: 'c_2', preview: 'Mio 记的剪贴板活不过这次开机', pinned: true, t: Date.now() - 6000 },
+      { id: 'c_1', preview: 'npm run start', pinned: false, t: Date.now() - 12000 },
+    ],
+    paused: false, enabled: true, limit: 10, pinnedCount: 1,
+  }),
+  clipCopy: async () => ({ ok: true, preview: '已复制' }),
+  clipPin: async () => ({ ok: true, pinnedCount: 1 }),
+  clipUnpin: async () => ({ ok: true, pinnedCount: 0 }),
+  clipDelete: async () => ({ ok: true }),
+  clipClear: async () => ({ ok: true }),
+  clipPause: async (paused) => ({ ok: true, paused: !!paused }),
+  onClipChanged: () => {}, onClipNotice: () => {},
+  actLock: async () => ({ ok: true, locked: true, degraded: false, need: null }),
+  actScreenshot: async () => ({ ok: true }),
+  trashSize: async () => ({ ok: true, bytes: 2.4e9, count: 148 }),
+  trashEmpty: async () => ({ ok: true, removed: 148, failed: 0, need: null }),
+  permStatus: async () => ({ ok: true, screen: 'granted', accessibility: true, automation: 'granted' }),
+  permRequest: async () => ({ ok: true, status: true }),
+  permOpen: async () => ({ ok: true }),
+  hotkeyRecord: async (accelerator) => ({ ok: true, trigger: accelerator }),
+  hotkeyReset: async () => ({ ok: true, trigger: 'Alt+Space' }),
 };
 
 const mioEl = document.getElementById('mio');
@@ -128,17 +160,26 @@ function escHtml(s) {
 // 声明放在前面：tickClock 会在启动阶段立即调用 chimeTick，不能等到文件末尾才初始化
 const pad2 = (n) => String(n).padStart(2, '0');
 // 只有这些键属于「设置」，其余是 meta（isPackaged / version …），不能混进 settings
-const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'stealth'];
+const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent'];
 let settings = {
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
-  notify: { style: 'bubble' },
+  notify: { style: 'both' },
+  pomodoro: { work: 25 },
   stealth: { enabled: true, opacity: 0.12, apps: null },
+  clipboard: { enabled: true, limit: 10, filterPassword: false },
+  capture: { mode: 'region', dest: 'clipboard' },
+  hotkey: { trigger: 'Alt+Space' },
+  consent: { permsIntroSeen: false },
 };
-let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '', displays: [] };
+let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '', displays: [], permissions: null, hotkeyRegistered: true };
 let gazeEnabled = true; // 视线跟随开关，由 appearance.gaze 决定
+// v1.6 B2-4：专注联动（内存态，不落盘；重启归零）
+let focusMode = false;
+// 免打扰判据：番茄钟专注 或 处于时段免打扰，任一命中即静默（FOCUS-3 叠加）
+function dndActive() { return focusMode || inQuietHours(new Date().getHours()); }
 
 function pickSettings(s) {
   const out = {};
@@ -215,14 +256,30 @@ function renderSettings() {
   if (el('rngStealthOpacity')) el('rngStealthOpacity').value = String(Math.round(settings.stealth.opacity * 100));
   renderStealthList();
 
+  // v1.6：剪贴板 / 快捷操作 / 通知方式 / 番茄钟时长 / 快捷键
+  const cl = settings.clipboard;
+  set('swClip', cl.enabled);
+  set('swClipPwd', cl.filterPassword);
+  const segCL = el('segClipLimit');
+  if (segCL) [...segCL.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === String(cl.limit)));
+  const segCap = el('segCapture');
+  if (segCap) [...segCap.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === settings.capture.mode));
+  const segNS = el('segNotifyStyle');
+  if (segNS) [...segNS.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === settings.notify.style));
+  const segPW = el('segPomoWork');
+  if (segPW) [...segPW.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === String(settings.pomodoro.work)));
+  renderKeyRec();
+
   // 折叠标题上的摘要：收起时也能一眼看到状态
   const h = settings.health;
   const n = [h.sit, h.water, h.eye].filter(Boolean).length;
   const briefs = {
     general: `自启 ${settingsMeta.loginItem ? '开' : '关'}`,
     appearance: `${themeLabel} · ${sizeLabel} · ${Math.round(ap.opacity * 100)}%`,
-    notify: `报时 ${settings.chime.enabled ? '开' : '关'} · 健康 ${h.enabled ? n + ' 项' : '关'}`,
+    notify: `报时 ${settings.chime.enabled ? '开' : '关'} · 健康 ${h.enabled ? n + ' 项' : '关'} · ${notifyStyleLabel()}`,
     stealth: settings.stealth.enabled ? `${apps.length} 个` : '关',
+    clipboard: settings.clipboard.enabled ? `开 · ${settings.clipboard.limit} 条${settings.clipboard.filterPassword ? ' · 过滤' : ''}` : '关',
+    hotkey: accelLabel(settings.hotkey.trigger),
     about: settingsMeta.version ? `v${settingsMeta.version}` : '—',
   };
   Object.keys(briefs).forEach((k) => {
@@ -242,12 +299,17 @@ async function loadSettings() {
         stealthApps: s.stealthApps || [],
         version: s.version || '',
         userDataPath: s.userDataPath || '',
+        displays: settingsMeta.displays,
+        permissions: s.permissions || null,
+        hotkeyRegistered: s.hotkeyRegistered !== false,
       };
     }
   } catch {}
   renderSettings();
   applyAppearance();
   fillDisplays();
+  refreshClip();
+  refreshTrashBtn();
 }
 
 // 只发改动的那一枝，主进程做深合并；返回的整棵树里再挑出设置键
@@ -258,6 +320,7 @@ async function patchSettings(patch, after) {
       settings = { ...settings, ...pickSettings(saved) };
       if ('loginItem' in saved) settingsMeta.loginItem = !!saved.loginItem;
       if (saved.stealthApps) settingsMeta.stealthApps = saved.stealthApps;
+      if ('hotkeyRegistered' in saved) settingsMeta.hotkeyRegistered = saved.hotkeyRegistered !== false;
     }
   } catch {}
   renderSettings();
@@ -423,6 +486,16 @@ function say(text, ms = 2200) {
   bubbleTimer = setTimeout(() => (bubble.hidden = true), ms);
 }
 
+// v1.6 C9：统一的提醒出口 —— 依 settings.notify.style 决定走气泡 / 系统通知 / 两者。
+// 只作用于提醒类，不影响设置页内联提示。主进程的 notify 会顺带把消息记入消息中心，
+// 故只在「不发系统通知」时才手动补一条消息，避免重复。
+function notifyUser(title, body, opts = {}) {
+  const style = (settings.notify && settings.notify.style) || 'both';
+  if (style === 'bubble' || style === 'both') say(opts.sayText || title, opts.ms || 3000);
+  if (style === 'system' || style === 'both') api.notify(title, body);
+  else api.logMessage(title, body);
+}
+
 // ============ 面板 ============
 let panelOpen = false;
 function togglePanel() {
@@ -432,6 +505,8 @@ function togglePanel() {
     refreshStats();
     checkAdvice();
     refreshMessages();
+    refreshClip();      // v1.6
+    refreshTrashBtn();  // v1.6
   } else {
     // 收起面板：退出详情页、重置扫描缓存（下次展开重新扫）
     closeDetail();
@@ -494,7 +569,7 @@ document.getElementById('dvBack').addEventListener('click', () => { interact(); 
 // 卡片点击钻入详情（内部按钮/勾选项不触发）
 document.querySelectorAll('.expandable').forEach((card) => {
   card.addEventListener('click', (e) => {
-    if (e.target.closest('button, .pick-item, .p-kill, .sort-toggle, .pick-all, .switch')) return;
+    if (e.target.closest('button, .pick-item, .p-kill, .sort-toggle, .pick-all, .switch, .clip-item, .clip-head')) return;
     interact();
     openDetail(card);
   });
@@ -506,6 +581,7 @@ function onCardExpanded(id) {
   if (id === 'cacheRankCard' && !cacheRankScanned) scanCacheRankUI();
   if (id === 'leftoverCard' && !leftoversScanned) scanLeftoversUI();
   if (id === 'cleanHistCard') refreshCleanHistory();
+  if (id === 'clipCard') refreshClip(); // v1.6：展开时拉最新剪贴板列表
   if (id === 'msgCard') {
     // 展开即已读
     lastMsgSeen = Date.now();
@@ -585,7 +661,7 @@ function chimeTick(d) {
   if (!c.enabled) return;
   const h = d.getHours();
   if (!inChimeRange(h, c.from, c.to)) return;
-  if (inQuietHours(h)) return;
+  if (dndActive()) return; // v1.6：专注/免打扰期内不报时
   const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}-${h}`;
   if (key === lastChimeKey) return;
   lastChimeKey = key;
@@ -594,9 +670,11 @@ function chimeTick(d) {
   const label = hour12
     ? `现在 ${h % 12 === 0 ? 12 : h % 12} 点`
     : `现在 ${pad2(h)}:00`;
-  say(label);
-  api.logMessage('Mio · 整点报时', label);
-  if (c.notify) api.notify('Mio · 整点报时', label);
+  // v1.6 C9：通道由 notify.style 与「整点报时同时发系统通知」共同决定（叠加）
+  const style = settings.notify.style || 'both';
+  if (style === 'bubble' || style === 'both') say(label);
+  if ((style === 'system' || style === 'both') && c.notify) api.notify('Mio · 整点报时', label);
+  else api.logMessage('Mio · 整点报时', label);
 }
 tickClock();
 setInterval(tickClock, 1000);
@@ -880,9 +958,9 @@ setInterval(async () => {
   if (diskWarned || !bridge) return;
   const s = await api.getFullStats();
   if (s.disk.usedPct >= 90) {
+    if (dndActive()) return; // v1.6：专注/免打扰期不弹；不置 diskWarned，退出免打扰后再判
     diskWarned = true;
-    say('磁盘快满了，点我清理一下', 5000);
-    api.notify('Mio · 磁盘告警', `磁盘已用 ${s.disk.usedPct}%，建议清理`);
+    notifyUser('Mio · 磁盘告警', `磁盘已用 ${s.disk.usedPct}%，建议清理`, { sayText: '磁盘快满了，点我清理一下', ms: 5000 });
   }
 }, 60000);
 
@@ -1276,7 +1354,7 @@ async function checkAdvice() {
       } else if (state === 'idle' || state === 'sleepy') {
         setState('curious', 4000);
       }
-      if (!panelOpen) say(top.title, 4000);
+      if (!panelOpen && !dndActive()) say(top.title, 4000); // v1.6：专注/免打扰期不冒泡（卡片仍可在面板看到）
     }
   } catch {}
 }
@@ -1330,9 +1408,10 @@ document.getElementById('adviceClose').addEventListener('click', () => {
 setInterval(checkAdvice, 120000);
 
 // ============ 番茄钟 ============
-const POMO_WORK = 25 * 60;
+// v1.6 C10：默认时长走 settings.pomodoro.work（25/45/60）；休息固定 5 分钟
 const POMO_REST = 5 * 60;
-let pomoLeft = POMO_WORK;
+const workSeconds = () => (Number(settings.pomodoro && settings.pomodoro.work) || 25) * 60;
+let pomoLeft = workSeconds();
 let pomoRunning = false;
 let pomoPhase = 'work';
 let pomoTimer = null;
@@ -1348,7 +1427,10 @@ function renderPomo() {
   pomoTimeEl.textContent = fmt(pomoLeft);
   pomoDot.classList.toggle('on', pomoRunning);
   working = pomoRunning && pomoPhase === 'work';
+  focusMode = working; // v1.6 FOCUS-1/2：仅「运行中的工作阶段」才算专注
   mioEl.classList.toggle('mio--working', working);
+  if (pomoRunning && pomoPhase === 'work') pomoStateEl.textContent = '专注中 · 已开启免打扰';
+  else if (pomoRunning && pomoPhase === 'rest') pomoStateEl.textContent = '休息中…';
 }
 
 document.getElementById('pomodoroCard').addEventListener('click', () => {
@@ -1356,12 +1438,13 @@ document.getElementById('pomodoroCard').addEventListener('click', () => {
   if (pomoRunning) {
     clearInterval(pomoTimer);
     pomoRunning = false;
-    pomoLeft = pomoPhase === 'work' ? POMO_WORK : POMO_REST;
+    pomoLeft = pomoPhase === 'work' ? workSeconds() : POMO_REST;
     pomoStateEl.textContent = '已停止，点击重新开始';
     setState('idle');
   } else {
     pomoRunning = true;
-    pomoStateEl.textContent = pomoPhase === 'work' ? '专注中…' : '休息中…';
+    pomoLeft = pomoPhase === 'work' ? workSeconds() : POMO_REST; // 每轮开始取最新配置（C10：下一轮生效）
+    pomoStateEl.textContent = pomoPhase === 'work' ? '专注中 · 已开启免打扰' : '休息中…';
     setState('thinking');
     say(pomoPhase === 'work' ? '开始专注，我陪着你' : '休息一下吧');
     pomoTimer = setInterval(() => {
@@ -1371,16 +1454,15 @@ document.getElementById('pomodoroCard').addEventListener('click', () => {
         if (pomoPhase === 'work') {
           pomoPhase = 'rest';
           pomoLeft = POMO_REST;
-          api.notify('Mio · 番茄钟', '专注结束，休息 5 分钟吧');
-          say('干得漂亮！休息一下');
+          // 番茄钟自身阶段切换通知不受专注抑制（FOCUS-1），照常发
+          notifyUser('Mio · 番茄钟', '专注结束，休息 5 分钟吧', { sayText: '干得漂亮！休息一下' });
           setState('happy', 3000);
         } else {
           pomoPhase = 'work';
-          pomoLeft = POMO_WORK;
-          api.notify('Mio · 番茄钟', '休息结束，开始下一轮专注');
-          say('继续加油！');
+          pomoLeft = workSeconds();
+          notifyUser('Mio · 番茄钟', '休息结束，开始下一轮专注', { sayText: '继续加油！' });
         }
-        pomoStateEl.textContent = pomoPhase === 'work' ? '专注中…' : '休息中…';
+        pomoStateEl.textContent = pomoPhase === 'work' ? '专注中 · 已开启免打扰' : '休息中…';
       }
     }, 1000);
   }
@@ -1396,8 +1478,8 @@ document.querySelectorAll('.btn.reminder').forEach((btn) => {
     document.getElementById('reminderInfo').textContent = `已设定：${min} 分钟后提醒`;
     say(`好的，${min} 分钟后叫你`);
     setTimeout(() => {
-      api.notify('Mio · 提醒', `${min} 分钟到了！`);
-      say('时间到啦！', 4000);
+      if (dndActive()) return; // v1.6：专注/免打扰期内到点的快捷提醒直接跳过
+      notifyUser('Mio · 提醒', `${min} 分钟到了！`, { sayText: '时间到啦！', ms: 4000 });
       setState('surprised', 2000);
     }, min * 60 * 1000);
   });
@@ -1418,19 +1500,19 @@ let healthLastAny = 0;
 function healthTick() {
   const h = settings.health;
   if (!h.enabled) return;
-  if (inQuietHours(new Date().getHours())) return;
   const now = Date.now();
-  if (now - healthLastAny < HEALTH_MIN_GAP) return; // 最小间隔：避免扎堆轰炸
+  const silenced = dndActive(); // v1.6：专注/免打扰期内静默
+  if (!silenced && now - healthLastAny < HEALTH_MIN_GAP) return; // 最小间隔：避免扎堆轰炸
   // 到点的多项里只发「最久没提醒」的那一条，其余顺延到下一个 tick
   const due = HEALTH_ITEMS
     .filter((it) => h[it.key] && now - (healthLast[it.key] || 0) >= it.period)
     .sort((a, b) => (healthLast[a.key] || 0) - (healthLast[b.key] || 0))[0];
   if (!due) return;
+  // 静默期：推进计时戳但不发（跳过、不补发），避免专注/免打扰结束后连响一串（Q7）
   healthLast[due.key] = now;
   healthLastAny = now;
-  api.notify(due.title, due.body);
-  api.logMessage(due.title, due.body);
-  say(due.say, 3500);
+  if (silenced) return;
+  notifyUser(due.title, due.body, { sayText: due.say, ms: 3500 });
   setState('curious', 3000);
 }
 
@@ -1470,7 +1552,7 @@ function applyAppearance() {
   if (!a.clickThrough) api.setInteractive(true);
 }
 
-// 分段控件（球体尺寸）
+// 分段控件（球体尺寸 / 条数 / 通知方式 …）：纯数字档位自动转 Number 落盘
 function bindSeg(id, path) {
   const box = document.getElementById(id);
   if (!box) return;
@@ -1478,7 +1560,9 @@ function bindSeg(id, path) {
     const btn = e.target.closest('button[data-v]');
     if (!btn) return;
     interact();
-    patchSettings(buildPatch(path, btn.dataset.v), applyAppearance);
+    const raw = btn.dataset.v;
+    const val = /^\d+$/.test(raw) ? Number(raw) : raw;
+    patchSettings(buildPatch(path, val), applyAppearance);
   });
 }
 
@@ -1632,6 +1716,349 @@ function filterSettings() {
 }
 const setSearch = document.getElementById('setSearch');
 if (setSearch) setSearch.addEventListener('input', filterSettings);
+
+// ==================================================================
+// v1.6 B2-1：剪贴板历史（卡片/详情渲染与交互）
+// ==================================================================
+let clipState = { items: [], paused: false, enabled: true, limit: 10, pinnedCount: 0 };
+
+async function refreshClip() {
+  let r = null;
+  try { r = await api.clipList(); } catch {}
+  if (r && r.ok) clipState = r;
+  renderClipCard();
+}
+
+function renderClipCard() {
+  const brief = document.getElementById('clipBrief');
+  const badge = document.getElementById('clipBadge');
+  const hint = document.getElementById('clipHint');
+  const count = document.getElementById('clipCount');
+  const pauseBtn = document.getElementById('clipPauseBtn');
+  const limit = clipState.limit || 10;
+  if (brief) brief.textContent = clipState.enabled ? `最近 ${clipState.items.length} / ${limit} 条` : '采集已关闭';
+  if (badge) badge.textContent = clipState.paused ? '⏸ 已暂停' : '';
+  if (hint) hint.textContent = `最近 ${limit} 条`;
+  if (count) count.textContent = clipState.items.length ? `${clipState.items.length} 条 · 钉 ${clipState.pinnedCount}/3` : '暂无记录';
+  if (pauseBtn) pauseBtn.textContent = clipState.paused ? '继续' : '暂停';
+  const list = document.getElementById('clipList');
+  if (!list) return;
+  list.innerHTML = clipState.items.length
+    ? clipState.items.map((it) => `
+      <div class="clip-item" data-id="${escHtml(it.id)}">
+        <span class="clip-text" title="${escHtml(it.preview)}">${escHtml(it.preview)}</span>
+        <button class="clip-pin ${it.pinned ? 'on' : ''}" data-id="${escHtml(it.id)}" title="${it.pinned ? '取消钉住' : '钉住（最多 3 条）'}">📌</button>
+        <button class="clip-del" data-id="${escHtml(it.id)}" title="删除">✕</button>
+      </div>`).join('')
+    : '<div class="clip-empty">还没有记录，复制点文本试试</div>';
+}
+
+const clipListEl = document.getElementById('clipList');
+if (clipListEl) {
+  clipListEl.addEventListener('click', async (e) => {
+    const del = e.target.closest('.clip-del');
+    const pin = e.target.closest('.clip-pin');
+    const row = e.target.closest('.clip-item');
+    interact();
+    if (del) {
+      await api.clipDelete(del.dataset.id);
+      await refreshClip();
+      return;
+    }
+    if (pin && row) {
+      const id = pin.dataset.id;
+      const item = clipState.items.find((i) => i.id === id);
+      const r = item && item.pinned ? await api.clipUnpin(id) : await api.clipPin(id);
+      if (r && !r.ok) say(r.error || '操作失败');
+      await refreshClip();
+      return;
+    }
+    if (row) {
+      const r = await api.clipCopy(row.dataset.id);
+      if (!r || !r.ok) { say((r && r.error) || '取回失败'); return; }
+      row.classList.add('copied');
+      say('已复制到剪贴板', 1600);
+      setTimeout(() => row.classList.remove('copied'), 700);
+      await refreshClip();
+    }
+  });
+}
+
+const clipPauseBtn = document.getElementById('clipPauseBtn');
+if (clipPauseBtn) clipPauseBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  const r = await api.clipPause(!clipState.paused);
+  if (r && r.ok) say(r.paused ? '已暂停记录' : '已恢复记录');
+  await refreshClip();
+});
+
+const clipClearBtn = document.getElementById('clipClearBtn');
+if (clipClearBtn) clipClearBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  if (!clipState.items.length) { say('已经是空的'); return; }
+  const ok = await showConfirm({
+    title: '清除全部剪贴板记录？',
+    body: `将清空 ${clipState.items.length} 条记录（只删内存副本，不影响系统剪贴板当前内容）。`,
+    okText: '全部清除',
+  });
+  if (!ok) return;
+  await api.clipClear();
+  await refreshClip();
+  say('已清空剪贴板记录');
+});
+
+// 主进程推来变更/提示
+api.onClipChanged(() => { refreshClip(); });
+api.onClipNotice(() => { say('刚才那条像密码，已跳过收录', 3200); });
+
+// ==================================================================
+// v1.6 B2-2：快捷操作三件套 + 权限引导
+// ==================================================================
+const qaNoticeEl = document.getElementById('qaNotice');
+
+// 失败态双通道之一：面板内一行可点提示（含「去系统设置」深链）
+function notice(which, text) {
+  if (!qaNoticeEl) return;
+  qaNoticeEl.hidden = false;
+  qaNoticeEl.innerHTML = `${escHtml(text)} <span class="qa-link" data-which="${which}">去系统设置 →</span>`;
+}
+function clearNotice() { if (qaNoticeEl) qaNoticeEl.hidden = true; }
+
+if (qaNoticeEl) qaNoticeEl.addEventListener('click', (e) => {
+  const link = e.target.closest('.qa-link');
+  if (!link) return;
+  interact();
+  api.permOpen(link.dataset.which);
+  say('已打开系统设置，改完回到 Mio 再试一次', 3500);
+});
+
+async function refreshTrashBtn() {
+  const btn = document.getElementById('qaTrash');
+  if (!btn) return;
+  let t = null;
+  try { t = await api.trashSize(); } catch {}
+  if (!t || !t.bytes) { btn.disabled = true; btn.textContent = '废纸篓已是空的'; }
+  else { btn.disabled = false; btn.textContent = `清空废纸篓 · ${fmtBytes(t.bytes)}`; }
+}
+
+// 统一说明弹层：三项权限一次讲清，只弹一次（标志跨重启保存在 settings.consent）
+const introOverlay = document.getElementById('introOverlay');
+function showIntro() {
+  return new Promise((resolve) => {
+    if (!introOverlay) return resolve(true);
+    const go = document.getElementById('introGo');
+    const later = document.getElementById('introLater');
+    const cleanup = () => { go.removeEventListener('click', onGo); later.removeEventListener('click', onLater); };
+    const onGo = () => { cleanup(); introOverlay.hidden = true; resolve(true); };
+    const onLater = () => { cleanup(); introOverlay.hidden = true; resolve(false); };
+    go.addEventListener('click', onGo);
+    later.addEventListener('click', onLater);
+    introOverlay.hidden = false;
+  });
+}
+async function ensurePermIntro() {
+  if (settings.consent && settings.consent.permsIntroSeen) return true;
+  const ok = await showIntro();
+  if (ok) await patchSettings(buildPatch(['consent', 'permsIntroSeen'], true));
+  return ok; // 点「稍后」→ 本次不执行、不改标志（下次仍会讲一次）
+}
+
+const qaLock = document.getElementById('qaLock');
+if (qaLock) qaLock.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  if (!(await ensurePermIntro())) return;
+  // 探测用 (false) 不弹窗；用户点过「继续」后才用 (true) 触发系统辅助功能弹窗
+  await api.permRequest('accessibility');
+  const r = await api.actLock();
+  if (r && r.locked) { clearNotice(); say('已锁屏', 2000); }
+  else {
+    notice('accessibility', '已熄屏但没有锁定。要真锁屏，去开启辅助功能。');
+    say('已让屏幕睡下，但没有锁定', 3500);
+  }
+});
+
+const qaShot = document.getElementById('qaShot');
+if (qaShot) qaShot.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  if (!(await ensurePermIntro())) return;
+  const snap = await api.permStatus();
+  if (snap && (snap.screen === 'denied' || snap.screen === 'restricted')) {
+    notice('screen', '没有屏幕录制权限，截图会是空白。');
+    say('没有屏幕录制权限，截图会是空白', 3600);
+    return;
+  }
+  const r = await api.actScreenshot({ mode: settings.capture.mode });
+  if (r && r.canceled) return; // Esc 取消 → 静默，不报错、不写历史
+  if (!r || !r.ok) {
+    if (r && r.need === 'screen') { notice('screen', '没有屏幕录制权限，截图会是空白。'); say('没有屏幕录制权限，截图会是空白', 3600); }
+    else say((r && r.error) || '截图没有完成');
+    return;
+  }
+  if (r.blank) {
+    notice('screen', '若截图是空白，请重启 Mio 后重试（屏幕录制授权后需重启生效）。');
+    say('已截图。若为空白，请重启 Mio 后再试', 4200);
+  } else {
+    clearNotice();
+    say('已复制到剪贴板', 2000);
+  }
+});
+
+const qaTrash = document.getElementById('qaTrash');
+if (qaTrash) qaTrash.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  const t = await api.trashSize();
+  if (!t || !t.bytes) { say('废纸篓已经是空的'); refreshTrashBtn(); return; }
+  // 硬约束 2：清空废纸篓是本产品唯一不可逆操作，强制二次确认且先亮释放量
+  const ok = await showConfirm({
+    title: `清空废纸篓？可释放 ${fmtBytes(t.bytes)}`,
+    body: `将永久删除废纸篓内约 ${t.count} 项，共 ${fmtBytes(t.bytes)}。\n这是不可恢复的操作。\n（Mio 只调用系统原生「清空废纸篓」，绝不使用 rm）`,
+    okText: '永久清空',
+  });
+  if (!ok) return;
+  if (!(await ensurePermIntro())) return;
+  const r = await api.trashEmpty();
+  if (!r || !r.ok) {
+    if (r && r.need === 'automation') { notice('automation', '需要「自动化 · 控制 Finder」权限才能清空废纸篓。'); say('清空废纸篓需要先授权', 3500); }
+    else { notice('automation', (r && r.error) || '清空失败，请稍后再试。'); say((r && r.error) || '清空失败', 3000); }
+    return;
+  }
+  clearNotice();
+  say(r.failed ? `已清空 ${r.removed} 项，${r.failed} 项被占用跳过` : `已清空废纸篓，释放 ${fmtBytes(t.bytes)}`, 3500);
+  refreshTrashBtn();
+});
+
+// ==================================================================
+// v1.6 B2-3：快捷键录制器（code → accelerator 映射 + 回滚提示）
+// ==================================================================
+const ACCEL_MOD_ORDER = ['Command', 'Control', 'Alt', 'Shift'];
+const MODIFIER_CODES = new Set(['MetaLeft', 'MetaRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight', 'CapsLock']);
+const MAIN_KEY_CODE = {
+  Space: 'Space', Enter: 'Return', NumpadEnter: 'Return', Escape: 'Escape',
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  Backspace: 'Backspace', Delete: 'Delete', Tab: 'Tab', Insert: 'Insert',
+  Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+  Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
+  Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backquote: '`',
+};
+// e.code（物理键位，与输入法无关）→ Electron accelerator 主键
+function keyFromCode(code) {
+  if (!code) return '';
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
+  if (/^Numpad[0-9]$/.test(code)) return code.slice(6);
+  return MAIN_KEY_CODE[code] || '';
+}
+function isModifierOnly(code) {
+  if (!code) return false;
+  if (MODIFIER_CODES.has(code)) return true;
+  return /^(Meta|Control|Alt|Shift|OS)(Left|Right)$/.test(code);
+}
+function canonical(mods, key) {
+  return [...ACCEL_MOD_ORDER.filter((m) => mods.includes(m)), key].join('+');
+}
+// 只按修饰键 / 无 Cmd|Ctrl|Alt / 认不出的键（多媒体等）→ 返回空串，调用方据此提示
+function accelFromEvent(e) {
+  const code = (e && e.code) || '';
+  if (!code || isModifierOnly(code)) return '';
+  const key = keyFromCode(code);
+  if (!key) return '';
+  const mods = [];
+  if (e.metaKey) mods.push('Command');
+  if (e.ctrlKey) mods.push('Control');
+  if (e.altKey) mods.push('Alt');
+  if (e.shiftKey) mods.push('Shift');
+  if (!(mods.includes('Command') || mods.includes('Control') || mods.includes('Alt'))) return '';
+  return canonical(mods, key);
+}
+function accelLabel(acc) {
+  if (!acc) return '—';
+  return String(acc).replace(/Command/g, '⌘').replace(/Control/g, '⌃').replace(/Alt/g, '⌥').replace(/Shift/g, '⇧').replace(/\+/g, '');
+}
+function notifyStyleLabel() {
+  return { bubble: '只气泡', system: '只系统通知', both: '气泡+系统' }[settings.notify.style] || '气泡+系统';
+}
+
+let recordingKey = false;
+const keyRecEl = document.getElementById('keyRec');
+const keyRecBtnEl = document.getElementById('keyRecBtn');
+const keyHintEl = document.getElementById('keyHint');
+
+function renderKeyRec() {
+  if (keyRecEl && !recordingKey) keyRecEl.textContent = accelLabel(settings.hotkey.trigger);
+}
+function setKeyHint(text, color) {
+  if (!keyHintEl) return;
+  keyHintEl.textContent = text;
+  keyHintEl.style.color = color || '';
+}
+function startKeyRecord() {
+  if (recordingKey) { stopKeyRecord(); return; }
+  recordingKey = true;
+  if (keyRecEl) { keyRecEl.classList.add('recording'); keyRecEl.textContent = '按下新快捷键…'; }
+  if (keyRecBtnEl) keyRecBtnEl.textContent = '取消';
+  setKeyHint('请按下新的组合键（Esc 取消）');
+}
+function stopKeyRecord() {
+  recordingKey = false;
+  if (keyRecEl) keyRecEl.classList.remove('recording');
+  if (keyRecBtnEl) keyRecBtnEl.textContent = '录制';
+  renderKeyRec();
+}
+
+document.addEventListener('keydown', async (e) => {
+  if (!recordingKey) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.code === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    stopKeyRecord();
+    setKeyHint('已取消录制');
+    return;
+  }
+  if (isModifierOnly(e.code)) { setKeyHint('请再按一个字母 / 数字 / 功能键'); return; }
+  const acc = accelFromEvent(e);
+  if (!acc) { setKeyHint('这个键 Mio 认不出来，换个组合'); return; }
+  if (acc === 'Alt+H') { setKeyHint('与手动隐藏键冲突'); return; }
+  const r = await api.hotkeyRecord(acc);
+  stopKeyRecord();
+  if (r && r.ok) {
+    settings.hotkey.trigger = r.trigger;
+    renderSettings();
+    setKeyHint(`已设为 ${accelLabel(r.trigger)}，立即生效`, 'var(--mi-accent)');
+  } else {
+    setKeyHint((r && r.error) || '这个组合注册失败，已还原');
+  }
+});
+if (keyRecBtnEl) keyRecBtnEl.addEventListener('click', (e) => { e.stopPropagation(); interact(); startKeyRecord(); });
+if (keyRecEl) keyRecEl.addEventListener('click', (e) => { e.stopPropagation(); interact(); startKeyRecord(); });
+
+const keyResetEl = document.getElementById('keyReset');
+if (keyResetEl) keyResetEl.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  const r = await api.hotkeyReset();
+  if (r && r.ok) {
+    settings.hotkey.trigger = r.trigger;
+    stopKeyRecord();
+    renderSettings();
+    setKeyHint(`已恢复为 ${accelLabel(r.trigger)}`, 'var(--mi-accent)');
+  } else {
+    setKeyHint((r && r.error) || '恢复失败');
+  }
+});
+
+// ============ v1.6：设置绑定 ============
+bindSwitch('swClip', ['clipboard', 'enabled'], refreshClip);
+bindSwitch('swClipPwd', ['clipboard', 'filterPassword']);
+bindSeg('segClipLimit', ['clipboard', 'limit']);
+bindSeg('segCapture', ['capture', 'mode']);
+bindSeg('segNotifyStyle', ['notify', 'style']);
+bindSeg('segPomoWork', ['pomodoro', 'work']);
 
 loadSettings();
 

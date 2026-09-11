@@ -1105,3 +1105,101 @@ body.reduce-motion *::after {
   animation: none !important;
   transition: none !important;
 }
+
+/* ============ v1.6：剪贴板卡片 ============ */
+.clip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.clip-head .sub-inline { flex: 1; }
+.clip-head .btn.tiny { flex: 0 0 auto; padding: 4px 10px; }
+.clip-list { max-height: 200px; overflow-y: auto; }
+.clip-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px;
+  border-bottom: 0.5px solid rgba(var(--mi-overlay-rgb), 0.05);
+  cursor: pointer;
+}
+.clip-item:last-child { border-bottom: none; }
+.clip-item:hover { background: rgba(var(--mi-overlay-rgb), 0.04); }
+.clip-item .clip-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--mi-tx2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clip-item.copied .clip-text { color: var(--mi-accent); }
+.clip-pin, .clip-del {
+  flex-shrink: 0;
+  width: 18px; height: 18px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--mi-tx4);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.16s;
+}
+.clip-pin:hover { background: rgba(133, 183, 235, 0.16); }
+.clip-pin.on { color: var(--mi-accent); }
+.clip-del:hover { color: var(--mi-danger); background: rgba(216, 90, 48, 0.16); }
+.clip-empty { font-size: 11px; color: var(--mi-tx4); padding: 8px 2px; text-align: center; }
+
+/* ============ v1.6：快捷操作卡 ============ */
+.qa-row { display: flex; gap: 6px; margin-top: 8px; }
+.qa-row .btn { flex: 1; font-size: 11px; padding: 7px 0; }
+.qa-row .btn:disabled { opacity: 0.4; cursor: default; color: var(--mi-tx4); background: rgba(var(--mi-overlay-rgb), 0.05); border-color: rgba(var(--mi-overlay-rgb), 0.1); }
+.qa-notice {
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--mi-warn);
+  background: rgba(224, 184, 79, 0.1);
+  border: 0.5px solid rgba(224, 184, 79, 0.28);
+}
+.qa-link {
+  color: var(--mi-accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.qa-link:hover { color: var(--mi-accent2); }
+
+/* ============ v1.6：快捷键录制器 ============ */
+.keyrec {
+  min-width: 96px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--mi-tx1);
+  background: rgba(var(--mi-sunken-rgb), 0.9);
+  border: 0.5px solid rgba(133, 183, 235, 0.3);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.keyrec:hover { border-color: rgba(133, 183, 235, 0.5); }
+.keyrec.recording {
+  color: var(--mi-accent);
+  border-color: var(--mi-accent2);
+  background: rgba(133, 183, 235, 0.16);
+  animation: rimPulse 1.4s ease-in-out infinite;
+}
+.keyrec-actions { display: flex; gap: 6px; margin: 8px 0 4px; }
+
+/* 统一说明弹层：正文行距放松一点，读起来不累 */
+.intro-box .confirm-body { max-height: 300px; }
+
+/* ============ v1.6：主题令牌补充（沿用 17 个变量，不新增硬编码色） ============ */

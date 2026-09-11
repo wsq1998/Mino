@@ -1,0 +1,98 @@
+%% Mio v1.6 增量设计 · 关键调用时序（三条链路）
+%% 目标：截图带权限引导 / 快捷键录制并生效 / 番茄钟免打扰联动
+
+%% ========== 链路 1：截图带权限引导（ACT-2）==========
+sequenceDiagram
+  actor U as 用户
+  participant R as renderer/app.js
+  participant M as main.js
+  participant SP as systemPreferences
+  participant SC as screencapture
+
+  U->>R: 点「截图」
+  R->>M: invoke perm-status
+  M->>SP: getMediaAccessStatus('screen')
+  SP-->>M: 'not-determined' | 'granted' | 'denied' | ...
+  M-->>R: { screen, consent.permsIntroSeen }
+  alt 首次（permsIntroSeen=false）
+    R->>U: 显示 #introOverlay（三项权限一次讲清）
+    U->>R: 点「继续」
+    R->>M: settings-set { consent:{permsIntroSeen:true} }
+  end
+  alt screen = granted
+    R->>M: invoke act-screenshot {mode}
+    M->>SC: screencapture -i -c / -W -c / -c -R x,y,w,h
+    SC-->>M: 退出码 0(成功) / 1(Esc 取消)
+    M-->>R: { ok, canceled? }
+    R->>U: 成功静默 或 行内「已复制到剪贴板」
+  else screen = denied/restricted
+    R->>U: 气泡「没有屏幕录制权限，截图会是空白」+ 提示行「去系统设置 →」
+    U->>R: 点提示行
+    R->>M: invoke perm-open {which:'screen'}
+    M->>M: shell.openExternal(Privacy_ScreenCapture 深链)
+  else screen = not-determined
+    R->>M: invoke act-screenshot（触发系统弹窗）
+    M->>SC: screencapture（首次可能空白）
+    M-->>R: { ok, blank?:true }
+    R->>U: 「若为空白，请重启 Mio 后再试」
+  end
+
+%% ========== 链路 2：快捷键录制并生效（KEY-1/2）==========
+sequenceDiagram
+  actor U as 用户
+  participant R as renderer/app.js
+  participant HM as main.js HotkeyManager
+  participant GS as globalShortcut
+  participant S as settings(userData)
+
+  U->>R: 点「录制」，进入捕获态「按下新快捷键…」
+  U->>R: 按下组合键 keydown
+  R->>R: accelFromEvent(e) → 规范串（如 Command+Shift+M）
+  alt 只按修饰键 / 无 Cmd|Ctrl|Alt / code 为空
+    R->>U: 「请再按一个字母/数字/功能键」
+  else 等于 Alt+H
+    R->>U: 「与手动隐藏键冲突」
+  else 合法
+    R->>HM: invoke hotkey-record {accelerator}
+    HM->>HM: validate(不与 Alt+H 冲突)
+    HM->>GS: unregister(旧 trigger)
+    HM->>GS: register(新) → boolean
+    alt register 成功
+      HM->>S: patchSettings { hotkey:{trigger:新} }
+      HM-->>R: { ok:true, trigger:新 }
+      R->>U: 显示新组合，立即生效
+    else register 失败（被占用）
+      HM->>GS: register(旧)  %% 回滚
+      HM-->>R: { ok:false, error, restored:旧 }
+      R->>U: 录制器下方红字「已还原为 ⌥Space」
+    end
+  end
+
+%% ========== 链路 3：番茄钟开始/结束的免打扰联动（FOCUS-1/2/3）==========
+sequenceDiagram
+  actor U as 用户
+  participant P as 番茄钟状态机(app.js)
+  participant D as dndActive()
+  participant H as healthTick / chimeTick / 快捷提醒 / 磁盘告警 / 建议气泡
+
+  U->>P: 点「番茄钟」开始（phase=work）
+  P->>P: focusMode = true
+  P->>U: 卡片副标题「专注中 · 已开启免打扰」
+  loop 每秒 tick / 每分钟 tick
+    H->>D: 到点判断
+    D-->>H: focusMode || inQuietHours(h) → true
+    alt 打扰型提醒（健康/报时/快捷/磁盘/建议）
+      H->>H: 推进计时戳但静默（跳过，不补发）
+    else 番茄钟自身阶段切换
+      H->>U: 照常发气泡 + 系统通知
+    end
+  end
+  U->>P: 停止 或 work 阶段自然结束
+  P->>P: focusMode = false
+  P->>U: 「已停止 / 休息一下」
+  H->>D: 重新判断
+  alt 仍在时段免打扰内
+    D-->>H: true → 保持静默（叠加关系）
+  else 时段外
+    D-->>H: false → 恢复提醒
+  end

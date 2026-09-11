@@ -51,6 +51,30 @@
         </div>
         <div id="reminderInfo" class="sub">久坐提醒：每 45 分钟</div>
       </div>
+      <!-- v1.6 B2-1：剪贴板历史（点击钻入详情） -->
+      <div class="card expandable interactive-btn" id="clipCard" data-dv-title="剪贴板历史">
+        <div class="label">剪贴板 <span id="clipBadge" class="sub-inline"></span><span class="expand-hint" id="clipHint">最近 10 条</span></div>
+        <div id="clipBrief" class="value small">—</div>
+        <div class="detail">
+          <div class="clip-head">
+            <span id="clipCount" class="sub-inline">0 条</span>
+            <button class="btn tiny" id="clipPauseBtn">暂停</button>
+            <button class="btn tiny danger" id="clipClearBtn">全部清除</button>
+          </div>
+          <div id="clipList" class="clip-list"></div>
+          <div class="set-note">只在本机内存保存，退出即清空，绝不写入磁盘</div>
+        </div>
+      </div>
+      <!-- v1.6 B2-2：快捷操作三件套 -->
+      <div class="card" id="qaCard">
+        <div class="label">快捷操作</div>
+        <div class="qa-row">
+          <button class="btn" id="qaLock">锁屏</button>
+          <button class="btn" id="qaShot">截图</button>
+          <button class="btn" id="qaTrash">清空废纸篓</button>
+        </div>
+        <div id="qaNotice" class="qa-notice" hidden></div>
+      </div>
       <button class="btn wide" id="homeToSettings">打开设置</button>
     </div>
 
@@ -233,6 +257,18 @@
           <div class="set-row indent"><span>喝水（每 45 分钟）</span><label class="switch"><input type="checkbox" id="swWater"><i></i></label></div>
           <div class="set-row indent"><span>护眼（每 20 分钟）</span><label class="switch"><input type="checkbox" id="swEye"><i></i></label></div>
           <div class="set-row"><span>免打扰时段</span><span class="set-val" id="quietRange">22:00 — 09:00</span></div>
+          <div class="set-row"><span>通知方式</span>
+            <div class="seg" id="segNotifyStyle">
+              <button data-v="bubble">气泡</button><button data-v="system">系统通知</button><button data-v="both">两者</button>
+            </div>
+          </div>
+          <div class="set-note">统管所有提醒（报时 / 健康 / 番茄钟阶段）；不影响设置页内的行内提示</div>
+          <div class="set-row"><span>番茄钟默认时长</span>
+            <div class="seg" id="segPomoWork">
+              <button data-v="25">25 分</button><button data-v="45">45 分</button><button data-v="60">60 分</button>
+            </div>
+          </div>
+          <div class="set-note">只影响下一轮番茄钟，不改变正在进行的一轮；休息固定 5 分钟</div>
           <div class="set-note">所有提醒统一调度，任意两次间隔至少 3 分钟；免打扰时段内全部静默</div>
         </div>
       </details>
@@ -255,6 +291,44 @@
         </div>
       </details>
 
+      <!-- v1.6 D1：召唤快捷键 -->
+      <details class="sgroup" data-group="hotkey">
+        <summary class="sgroup-h"><span class="sg-name">召唤快捷键</span><span class="sg-brief" id="sgBrief-hotkey"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>召唤/隐藏面板</span><button class="keyrec" id="keyRec">⌥Space</button></div>
+          <div class="keyrec-actions">
+            <button class="btn tiny" id="keyRecBtn">录制</button>
+            <button class="btn tiny" id="keyReset">恢复默认</button>
+          </div>
+          <div class="set-note" id="keyHint">点「录制」后按下新组合，至少包含 ⌘ / ⌃ / ⌥ 之一</div>
+          <div class="set-row"><span>手动隐藏兜底</span><span class="set-val"><b>⌥ H</b> 始终可用</span></div>
+        </div>
+      </details>
+
+      <!-- v1.6 E 组：剪贴板与快捷操作 -->
+      <details class="sgroup" data-group="clipboard">
+        <summary class="sgroup-h"><span class="sg-name">剪贴板与快捷操作</span><span class="sg-brief" id="sgBrief-clipboard"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>剪贴板历史</span><label class="switch"><input type="checkbox" id="swClip"><i></i></label></div>
+          <div class="set-note">只认文本、只存内存；关闭后立即清空并停止采集，无落盘故不需二次确认</div>
+          <div class="set-row"><span>保留条数</span>
+            <div class="seg" id="segClipLimit">
+              <button data-v="5">5</button><button data-v="10">10</button><button data-v="20">20</button>
+            </div>
+          </div>
+          <div class="set-row"><span>疑似密码过滤</span><label class="switch"><input type="checkbox" id="swClipPwd"><i></i></label></div>
+          <div class="set-note">开启后，符合密码格式（8–64 位、含大小写与数字、无空格）的内容不会被收录。默认关闭，避免误伤普通文本</div>
+          <div class="set-row"><span>截图默认模式</span>
+            <div class="seg" id="segCapture">
+              <button data-v="region">选区</button><button data-v="full">全屏</button><button data-v="window">窗口</button>
+            </div>
+          </div>
+          <div class="set-note">截图结果固定进入系统剪贴板，随手即可粘贴</div>
+          <div class="set-row"><span>清空废纸篓前确认</span><span class="set-val">强制开启</span></div>
+          <div class="set-note">这是刻意的安全设计：清空废纸篓不可恢复，Mio 每次都先弹二次确认并亮出释放量，不提供关闭选项</div>
+        </div>
+      </details>
+
       <details class="sgroup" data-group="about">
         <summary class="sgroup-h"><span class="sg-name">关于</span><span class="sg-brief" id="sgBrief-about"></span></summary>
         <div class="sgroup-b">
@@ -265,7 +339,7 @@
         </div>
       </details>
 
-      <div class="set-more" id="setMore">外观与主题 · 剪贴板 · 天气 · AI 助手 · 权限，将随后续版本陆续加入</div>
+      <div class="set-more" id="setMore">天气 · AI 助手 · 权限中心 · 数据与隐私，将随后续版本陆续加入</div>
     </div>
     </div>
 
@@ -287,6 +361,32 @@
       <div class="confirm-btns">
         <button class="btn" id="confirmCancel">取消</button>
         <button class="btn danger" id="confirmOk">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- v1.6：统一说明弹层（面板内，三项权限一次讲清，只弹一次） -->
+  <div id="introOverlay" class="confirm-overlay interactive" hidden>
+    <div class="confirm-box intro-box">
+      <div class="confirm-title">Mio 想帮你做几件事，需要几项系统权限</div>
+      <div class="confirm-body">· 截图 —— 需要「屏幕录制」权限
+  只在你点「截图」时读一次屏幕，截完即用。
+  不后台录制、不保存、不上传。
+
+· 锁屏 —— 需要「辅助功能」权限
+  只在你点「锁屏」时模拟一次锁屏快捷键。
+  不读取、不记录你的键盘输入。
+
+· 清空废纸篓 —— 需要「自动化（控制 Finder）」权限
+  只在你说清空时，让 Finder 执行一次原生清空。
+  不浏览、不改动你的其他文件。
+
+你的剪贴板、截图、系统数据全部只在本机处理，从不上传。
+不授权也能正常用，只是「截图」和「真锁屏」不可用
+（锁屏会降级为只熄屏）。</div>
+      <div class="confirm-btns">
+        <button class="btn" id="introLater">稍后</button>
+        <button class="btn" id="introGo">继续</button>
       </div>
     </div>
   </div>

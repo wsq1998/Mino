@@ -1,0 +1,108 @@
+%% Mio v1.6 增量设计 · 类图（架构级）
+%% 说明：v1.6 延续单体（main.js / renderer/app.js），下列为「逻辑模块」划分，
+%% 落地时对应到既有文件内的命名区块 / 函数集，不新增源文件。
+
+classDiagram
+  direction LR
+
+  class MainProcess {
+    +whenReady() void
+    +willQuit() void
+    +win BrowserWindow
+    +startClip() void
+    +stopClip() void
+  }
+
+  class SettingsStore {
+    -stateFile string
+    +loadState() object
+    +saveState(patch) void
+    +getSettings() Settings
+    +patchSettings(patch) Settings
+    +deepMerge(base, patch) object
+  }
+
+  class ClipStore {
+    -items ClipItem[]
+    -paused bool
+    -timer number
+    -lastText string
+    +start() void
+    +stop() void
+    +add(text) void
+    +copy(id) Result
+    +pin(id) Result
+    +unpin(id) void
+    +remove(id) void
+    +clear() void
+    +setPaused(b) void
+    +setLimit(n) void
+    +list() ClipItem[]
+    -enforceLimit() void
+    -isPasswordLike(text) bool
+  }
+
+  class ClipItem {
+    +id string
+    +text string
+    +pinned bool
+    +t number
+    +preview() string
+  }
+
+  class HotkeyManager {
+    -current string
+    +registerFromSettings() bool
+    +apply(acc) Result
+    +reset() Result
+    +validate(acc) Result
+  }
+
+  class PermissionService {
+    +screenStatus() ScreenStatus
+    +accessibilityTrusted(prompt) bool
+    +probeFinder() AutomationStatus
+    +openSettings(which) void
+    +snapshot() PermSnapshot
+  }
+
+  class QuickActions {
+    +lock() LockResult
+    +screenshot(mode) ShotResult
+    +trashSize() SizeInfo
+    +emptyTrash() TrashResult
+  }
+
+  class RendererApp {
+    +settings Settings
+    +focusMode bool
+    +clip renderClipCard()
+    +renderQuickActions() void
+    +bindSettings() void
+    +dndActive() bool
+    +startPomodoro() void
+    +stopPomodoro() void
+  }
+
+  class AccelMapper {
+    +accelFromEvent(e) string
+    +isModifierOnly(code) bool
+    +keyFromCode(code) string
+    +canonical(mods, key) string
+  }
+
+  SettingsStore --> ClipStore : clipboard.enabled/limit/filterPassword
+  SettingsStore --> HotkeyManager : hotkey.trigger
+  MainProcess --> SettingsStore
+  MainProcess --> ClipStore
+  MainProcess --> HotkeyManager
+  MainProcess --> PermissionService
+  MainProcess --> QuickActions
+  QuickActions --> PermissionService
+  HotkeyManager --> SettingsStore
+  RendererApp --> AccelMapper
+  RendererApp ..> SettingsStore : settings-get / settings-set
+  RendererApp ..> ClipStore : clip-* IPC
+  RendererApp ..> QuickActions : act-* / trash-* IPC
+  RendererApp ..> PermissionService : perm-* IPC
+  ClipItem --o ClipStore

@@ -43,4 +43,27 @@ contextBridge.exposeInMainWorld('mio', {
   getDisplays: () => ipcRenderer.invoke('displays-list'),
   // 把最近一次识别到的非 Mio 前台应用加入隐身名单
   stealthCapture: () => ipcRenderer.invoke('stealth-capture'),
+  // ===== v1.6 新增 =====
+  // B2-1 剪贴板历史（只认文本 · 只在内存；渲染层只拿 preview）
+  clipList: () => ipcRenderer.invoke('clip-list'),
+  clipCopy: (id) => ipcRenderer.invoke('clip-copy', { id }),
+  clipPin: (id) => ipcRenderer.invoke('clip-pin', { id }),
+  clipUnpin: (id) => ipcRenderer.invoke('clip-unpin', { id }),
+  clipDelete: (id) => ipcRenderer.invoke('clip-delete', { id }),
+  clipClear: () => ipcRenderer.invoke('clip-clear'),
+  clipPause: (paused) => ipcRenderer.invoke('clip-pause', { paused }),
+  onClipChanged: (cb) => ipcRenderer.on('clip-changed', (_e, data) => cb(data)),
+  onClipNotice: (cb) => ipcRenderer.on('clip-notice', (_e, data) => cb(data)),
+  // B2-2 快捷操作三件套
+  actLock: () => ipcRenderer.invoke('act-lock'),
+  actScreenshot: (payload) => ipcRenderer.invoke('act-screenshot', payload || {}),
+  trashSize: () => ipcRenderer.invoke('trash-size'),
+  trashEmpty: () => ipcRenderer.invoke('trash-empty'),
+  // 权限探测 / 申请 / 深链（只回状态枚举，绝不含明文）
+  permStatus: () => ipcRenderer.invoke('perm-status'),
+  permRequest: (which) => ipcRenderer.invoke('perm-request', { which }),
+  permOpen: (which) => ipcRenderer.invoke('perm-open', { which }),
+  // B2-3 召唤快捷键（原子注册 + 回滚）
+  hotkeyRecord: (accelerator) => ipcRenderer.invoke('hotkey-record', { accelerator }),
+  hotkeyReset: () => ipcRenderer.invoke('hotkey-reset'),
 });
