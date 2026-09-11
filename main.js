@@ -1267,6 +1267,21 @@ const fetchJson = async (url, timeout = 8000) => {
   return res.json();
 };
 
+// 自动定位：先用免 key 地理服务取真实经纬度，再交给 wttr.in 做坐标查询。
+// 为什么不再依赖 wttr.in 自带的 IP 定位：它按「公网出口 IP」判定，
+// VPN / 宽带出口 / 运营商 CGNAT 都会导致定位偏差（用户实测定位到的不是自己所在城市）。
+// api.ip.sb 免 key 且国内可达；结果 24h 内复用，避免每次刷新都多打一次网络请求
+let geoCache = null;
+async function ipGeo() {
+  if (geoCache && Date.now() - geoCache.at < 24 * 3600 * 1000) return geoCache;
+  const g = await fetchJson('https://api.ip.sb/geoip', 6000);
+  const lat = Number(g.latitude);
+  const lon = Number(g.longitude);
+  if (!lat || !lon) throw new Error('geo 无坐标');
+  geoCache = { city: g.city || g.region || '当前位置', lat, lon, at: Date.now() };
+  return geoCache;
+}
+
 // 权限探测层在 v1.6 已建好（perm-status / perm-request / perm-open + DEEP_LINKS），
 // v1.7 I 组直接复用，不再重复造 —— 这里只补数据与隐私相关通道。
 
@@ -1303,19 +1318,37 @@ ipcMain.handle('data-show', () => {
 // ============ v1.7 F 组：天气卡片（wttr.in 免 key + IP 定位城市）============
 // 隐私口径（写死进关于页的那段话）：只把「城市名」发出去，其余数据一律不出本机。
 // 失败语义：断网/超时/返回异常都不许让面板卡住 —— 返回 ok:false，渲染层保留旧值并提示
+// ⚠️ 码表必须跟着数据源走：wttr.in 用的是 WWO **三位**码（113/116/119/122/149/176…），
+// 不是 Open-Meteo 那套 WMO 0-99 码。此前误用 WMO 码表，实测 wttr.in 返回的码
+// 一个都命不中，导致几乎所有天气都 fallback 成「🌡️ 未知」。这里按 wttr.in 的码全量补齐
 const WX_CODES = {
-  0: ['☀️', '晴'], 1: ['🌤️', '大部晴'], 2: ['⛅', '局部多云'], 3: ['☁️', '阴'],
-  45: ['🌫️', '雾'], 48: ['🌫️', '雾凇'],
-  51: ['🌦️', '小毛毛雨'], 53: ['🌦️', '毛毛雨'], 55: ['🌧️', '大毛毛雨'],
-  61: ['🌧️', '小雨'], 63: ['🌧️', '中雨'], 65: ['🌧️', '大雨'],
-  66: ['🌧️', '冻雨'], 67: ['🌧️', '强冻雨'],
-  71: ['🌨️', '小雪'], 73: ['🌨️', '中雪'], 75: ['❄️', '大雪'], 77: ['🌨️', '雪粒'],
-  80: ['🌦️', '阵雨'], 81: ['🌦️', '阵雨'], 82: ['⛈️', '强阵雨'],
-  85: ['🌨️', '阵雪'], 86: ['🌨️', '阵雪'],
-  95: ['⛈️', '雷雨'], 96: ['⛈️', '雷雨伴冰雹'], 99: ['⛈️', '雷雨伴冰雹'],
+  113: ['☀️', '晴'], 116: ['🌤️', '大部晴'], 119: ['☁️', '阴'], 122: ['☁️', '阴'],
+  143: ['🌫️', '薄雾'], 149: ['🌫️', '烟霾'],
+  176: ['🌦️', '附近有阵雨'], 179: ['🌨️', '零星小雪'], 182: ['🌨️', '零星雨夹雪'],
+  185: ['🌧️', '零星冻毛毛雨'], 200: ['⛈️', '附近有雷'],
+  227: ['❄️', '风吹雪'], 230: ['❄️', '暴风雪'],
+  248: ['🌫️', '雾'], 260: ['🌫️', '冻雾'],
+  263: ['🌦️', '零星小毛毛雨'], 266: ['🌧️', '小毛毛雨'],
+  281: ['🌧️', '冻毛毛雨'], 284: ['🌧️', '强冻毛毛雨'],
+  293: ['🌦️', '零星小雨'], 296: ['🌧️', '小雨'],
+  299: ['🌧️', '间歇中雨'], 302: ['🌧️', '中雨'],
+  305: ['🌧️', '间歇大雨'], 308: ['🌧️', '大雨'],
+  311: ['🌧️', '冻雨'], 314: ['🌧️', '中到强冻雨'],
+  317: ['🌧️', '冻雨'], 320: ['🌧️', '中到强冻雨'],
+  323: ['🌨️', '零星小雪'], 326: ['🌨️', '小雪'],
+  329: ['🌨️', '零星中雪'], 332: ['🌨️', '中雪'],
+  335: ['❄️', '零星大雪'], 338: ['❄️', '大雪'],
+  350: ['🌨️', '冰粒'],
+  353: ['🌦️', '小阵雨'], 356: ['🌧️', '中到大阵雨'], 359: ['⛈️', '暴雨'],
+  362: ['🌨️', '小阵雨夹雪'], 365: ['🌨️', '中到大阵雨夹雪'],
+  368: ['🌨️', '小阵雪'], 371: ['🌨️', '中到大阵雪'],
+  374: ['🌨️', '小阵冰粒'], 377: ['🌨️', '中到大阵冰粒'],
+  386: ['⛈️', '零星雷雨'], 389: ['⛈️', '雷雨'],
+  392: ['⛈️', '零星雷雪'], 395: ['⛈️', '雷雪'],
 };
-const RAIN_CODES = new Set([51, 53, 55, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99]);
-const SNOW_CODES = new Set([71, 73, 75, 77, 85, 86]);
+// 带伞 / 保暖提示用的集合，同样按 WWO 码（原来也是 WMO 码，一并纠正）
+const RAIN_CODES = new Set([176, 263, 266, 281, 284, 293, 296, 299, 302, 305, 308, 311, 314, 317, 320, 353, 356, 359, 362, 365, 374, 377, 386, 389]);
+const SNOW_CODES = new Set([179, 182, 227, 230, 323, 326, 329, 332, 335, 338, 350, 368, 371, 392, 395]);
 
 let weatherCache = null;      // 最近一次成功结果（仅内存，重启重取 —— 数据本身无隐私价值，不值得落盘）
 let weatherTimer = null;
@@ -1327,9 +1360,19 @@ let weatherInflight = null;   // 防并发：轮询与手动刷新撞车时复�
 async function fetchWeather() {
   const manual = getSettings().weather.city;
   const unit = getSettings().weather.unit === 'f' ? 'f' : 'c';
-  const url = manual
-    ? `https://wttr.in/${encodeURIComponent(manual)}?format=j1`
-    : 'https://wttr.in/?format=j1';
+  let cityOverride = null;
+  let url;
+  if (manual) {
+    url = `https://wttr.in/${encodeURIComponent(manual)}?format=j1`;
+  } else {
+    try {
+      const g = await ipGeo();              // 先拿真实经纬度（比 wttr.in 自带 IP 定位准）
+      url = `https://wttr.in/${g.lat},${g.lon}?format=j1`;
+      cityOverride = g.city;                // 用地理服务给的城市名显示，更准更好读
+    } catch {
+      url = 'https://wttr.in/?format=j1';   // 兜底：退回 wttr.in 自带 IP 定位
+    }
+  }
   const j = await fetchJson(url);
   const cur = j && j.current_condition && j.current_condition[0];
   // wttr.in 的键名是大写单位（temp_C / temp_F / FeelsLikeC），小写会拿到 undefined
@@ -1338,6 +1381,7 @@ async function fetchWeather() {
   if (!cur || cur[tKey] === undefined) throw new Error('返回结构异常');
   const area = j && j.nearest_area && j.nearest_area[0];
   const city = manual
+    || cityOverride
     || (area && area.areaName && area.areaName[0] && area.areaName[0].value)
     || '当前位置';
   const code = Number(cur.weatherCode) || 0;
