@@ -2642,8 +2642,43 @@ app.whenReady().then(() => {
         let ddSys = '';
         try { ddSys = execFileSync('/usr/bin/shasum', ['-a', '256', ddF1]).toString().trim().split(/\s+/)[0]; } catch {}
         log('V18_DEDUPE_HASH: ' + JSON.stringify({ match: ddMine === ddSys && ddSys.length === 64 }));
+
+        // ===== QA 补充场景 A（v1.7.5 回归）：漏斗②③分组正确性 =====
+        // ① 同尺寸 + 前 4KB 相同 + 尾部不同 —— 必须**不**进同一组（证明漏斗③全量哈希不可省）；
+        // ② 同时混入一对真重复（= e1 的拷贝）—— 确认漏斗③没有把真重复也误杀掉
+        const aBase = fs.mkdtempSync(path.join(os.tmpdir(), 'mio-dda-'));
+        const headSame = Buffer.alloc(1200 * 1024, 'X'.charCodeAt(0)); // 前 4KB 完全一致
+        const aF1 = path.join(aBase, 'e1.bin');
+        const aF2 = path.join(aBase, 'e2.bin');
+        const aF3 = path.join(aBase, 'e3-dup-of-e1.bin');
+        const aBuf1 = Buffer.from(headSame); aBuf1.set(Buffer.alloc(4096, '1'), aBuf1.length - 4096); fs.writeFileSync(aF1, aBuf1);
+        const aBuf2 = Buffer.from(headSame); aBuf2.set(Buffer.alloc(4096, '2'), aBuf2.length - 4096); fs.writeFileSync(aF2, aBuf2);
+        fs.writeFileSync(aF3, aBuf1); // 真重复：与 e1 逐字节一致
+        const aRun = await startDedupe({ roots: [aBase] });
+        const aGroups = (aRun && aRun.groups) || [];
+        const aG0 = aGroups[0];
+        const aMemberPaths = aG0 ? aG0.files.map((f) => f.path) : [];
+        log('V18_DEDUPE_LAYER23: ' + JSON.stringify({
+          ok: aRun.ok === true,
+          oneGroup: aGroups.length === 1,                                        // 只有真重复成组
+          members2: aG0 ? aG0.files.length === 2 : false,
+          tailDiffExcluded: aMemberPaths.includes(aF1) && !aMemberPaths.includes(aF2), // 前4KB相同尾不同 → 不进组
+          realDupKept: aMemberPaths.includes(aF3),                               // 真重复没被误杀
+          wastedOk: aG0 ? aG0.wasted === aBuf1.length : false,
+        }));
+        // ===== QA 补充场景 B：暂停档的过期语义 =====
+        // pausedUntil 已过期 → 不算暂停，正常补跑执行（未来时间的跳过已由 V18_AUTOCLEAN_PAUSE 覆盖）
+        patchSettings({ autoClean: { enabled: true, pausedUntil: Date.now() - 1000 } });
+        fs.writeFileSync(path.join(acGreenA, 'after-expiry.bin'), 'x');
+        const acExpired = await runAutoClean(acFakeTargets);
+        log('V18_AUTOCLEAN_EXPIRED: ' + JSON.stringify({
+          executed: acExpired.ok === true && !acExpired.skipped,
+          emptied: fs.readdirSync(acGreenA).length === 0,
+          lastRunSet: !!getSettings().autoClean.lastRun,
+        }));
+        patchSettings({ autoClean: acPrev }); // 还原现场
         // 测试数据只走废纸篓通道收尾（绝不 rm）
-        for (const p of [ddF1, ddF2, ddF3, ddFDiff]) { try { await shell.trashItem(p); } catch {} }
+        for (const p of [ddF1, ddF2, ddF3, ddFDiff, aF1, aF2, aF3]) { try { await shell.trashItem(p); } catch {} }
 
         log('AUTOTEST_DONE');
         setTimeout(() => app.quit(), 600); // 自检跑完自动退出，便于脚本化
