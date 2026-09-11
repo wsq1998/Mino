@@ -74,6 +74,23 @@ function deepMerge(base, patch) {
   return out;
 }
 
+// 不透明度的**唯一存储口径**是单位区间小数（appearance 0.3–1 / stealth 0.05–0.9），
+// 百分数只活在界面层（滑块 0–100）。v1.5 的滑块漏了这一次换算，把 100 直接存了进来，
+// 回显时再 ×100 就显示成 10000%。这里在合并之后统一收口，既兜住历史脏数据，
+// 也保证「就算某个入口忘了换算，落盘的永远是合法值」。
+function normUnit(v, lo, hi, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  // > 1 只可能是百分数误存：100 → 1，10000 → 100 → 再夹到上界
+  return clamp(n > 1 ? n / 100 : n, lo, hi);
+}
+
+function sanitizeSettings(s) {
+  s.appearance.opacity = normUnit(s.appearance.opacity, 0.3, 1, 1);
+  s.stealth.opacity = normUnit(s.stealth.opacity, 0.05, 0.9, 0.12);
+  return s;
+}
+
 function getSettings() {
   const st = loadState();
   const saved = st.settings || {};
@@ -84,12 +101,13 @@ function getSettings() {
   if (!('opacity' in had) && typeof st.opacity === 'number') s.appearance.opacity = st.opacity;
   if (!('onTop' in had) && typeof st.alwaysOnTop === 'boolean') s.appearance.onTop = st.alwaysOnTop;
   s._v = SETTINGS_VERSION;
-  return s;
+  return sanitizeSettings(s);
 }
 
-// 写设置：deepMerge 后落盘，返回合并结果
+// 写设置：deepMerge 后落盘，返回合并结果。
+// sanitize 必须在 merge **之后** —— patch 自己也可能带着未换算的百分数。
 function patchSettings(patch) {
-  const next = deepMerge(getSettings(), patch || {});
+  const next = sanitizeSettings(deepMerge(getSettings(), patch || {}));
   saveState({ settings: next });
   return next;
 }
@@ -1940,6 +1958,23 @@ app.whenReady().then(() => {
           const rolledBack = globalShortcut.isRegistered(cur);
           globalShortcut.unregister(victim);
           return { ok: r.ok, restored: r.restored, rolledBack, trigger: getSettings().hotkey.trigger };
+        })()));
+
+        // 不透明度量纲：单位区间往返 + 历史脏数据清洗（100 与 10000 都要收敛回 1）
+        log('V16_OPACITY: ' + JSON.stringify((() => {
+          const keep = getSettings().appearance.opacity;
+          patchSettings({ appearance: { opacity: 0.65 } });
+          const round = getSettings().appearance.opacity;
+          const inject = (dirty) => {
+            saveState({ settings: deepMerge(getSettings(), { appearance: { opacity: dirty } }) });
+            return getSettings().appearance.opacity;
+          };
+          const from100 = inject(100);
+          const from10000 = inject(10000);
+          patchSettings({ stealth: { opacity: 12 } });   // 百分数误存
+          const stealth = getSettings().stealth.opacity;
+          patchSettings({ appearance: { opacity: keep }, stealth: { opacity: 0.12 } });
+          return { round, from100, from10000, stealth };
         })()));
 
         // 剪贴板不落盘自检（userData 四文件不得出现测试文本）

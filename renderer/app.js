@@ -1567,13 +1567,18 @@ function bindSeg(id, path) {
 }
 
 // 滑块：拖动时标签跟手，IPC 写入按 80ms 节流，避免一路刷盘
-function bindRange(id, path, fmt, after) {
+// 百分数滑块（0–100）→ 单位区间浮点。不透明度的存储口径是 0–1 的小数，
+// 换算只在 bindRange 的 toStore 里发生一次，避免「滑块 ×100、存储又 ×100」这类量纲错乱。
+const pctToUnit = (lo, hi) => (pct) => Math.min(hi, Math.max(lo, Math.round(Number(pct)) / 100));
+
+function bindRange(id, path, fmt, after, toStore) {
   const el = document.getElementById(id);
   if (!el) return;
   let timer = null;
   const push = () => {
-    const v = Number(el.value);
-    patchSettings(buildPatch(path, v), () => { applyAppearance(); if (after) after(v); });
+    const raw = Number(el.value);
+    const v = toStore ? toStore(raw) : raw;
+    patchSettings(buildPatch(path, v), () => { applyAppearance(); if (after) after(raw); });
   };
   el.addEventListener('input', () => {
     interact();
@@ -1628,9 +1633,11 @@ bindSwitch('swReduceMotion', ['appearance', 'reduceMotion'], applyAppearance);
 bindSeg('segSize', ['appearance', 'size']);
 bindSeg('segTheme', ['appearance', 'theme']);
 bindRange('rngOpacity', ['appearance', 'opacity'],
-  (v) => { const n = document.getElementById('opacityVal'); if (n) n.textContent = `${v}%`; });
+  (v) => { const n = document.getElementById('opacityVal'); if (n) n.textContent = `${v}%`; },
+  null, pctToUnit(0.3, 1));
 bindRange('rngStealthOpacity', ['stealth', 'opacity'],
-  (v) => { const n = document.getElementById('stealthOpacityVal'); if (n) n.textContent = `${v}%`; });
+  (v) => { const n = document.getElementById('stealthOpacityVal'); if (n) n.textContent = `${v}%`; },
+  null, pctToUnit(0.05, 0.9));
 
 const selDisplay = document.getElementById('selDisplay');
 if (selDisplay) {
