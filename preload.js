@@ -73,4 +73,13 @@ contextBridge.exposeInMainWorld('mio', {
   // 数据与隐私：wipe 传 'preview' 只列出会被清除的文件，传 'run' 才移入废纸篓
   wipeData: (mode) => ipcRenderer.invoke('data-wipe', mode),
   showDataFolder: () => ipcRenderer.invoke('data-show'),
+  // ===== v1.7.5 新增 =====
+  // 定时清理计划：主进程静默执行完（只碰绿色梯队）推一次 auto-clean-done，
+  // 渲染层出气泡 + 刷新清理记录（不弹窗、不弹系统通知）
+  onAutoCleanDone: (cb) => ipcRenderer.on('auto-clean-done', (_e, data) => cb(data)),
+  // 重复文件查重：三级漏斗后台扫描，进度走 dedupe-progress 事件，
+  // 最终结果（含 groups / canceled / truncated）由 dedupe-start 的 Promise 返回
+  dedupeStart: (payload) => ipcRenderer.invoke('dedupe-start', payload || {}),
+  dedupeCancel: () => ipcRenderer.invoke('dedupe-cancel'),
+  onDedupeProgress: (cb) => ipcRenderer.on('dedupe-progress', (_e, data) => cb(data)),
 });

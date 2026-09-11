@@ -18,9 +18,10 @@ const previewSettings = {
   hotkey: { trigger: 'Alt+Space' },
   consent: { permsIntroSeen: false },
   weather: { enabled: true, city: null, interval: 60, unit: 'c' },
+  autoClean: { enabled: false, pausedUntil: null, lastRun: null },
   isPackaged: false, loginItem: false,
   stealthApps: [{ id: 'com.colliderli.iina', name: 'IINA' }, { id: 'org.videolan.vlc', name: 'VLC' }],
-  version: '1.7.0', userDataPath: '~/Library/Application Support/Mio',
+  version: '1.7.5', userDataPath: '~/Library/Application Support/Mio',
 };
 function previewMerge(base, patch) {
   const out = { ...base };
@@ -144,6 +145,11 @@ const api = bridge || {
   permOpen: async () => ({ ok: true }),
   hotkeyRecord: async (accelerator) => ({ ok: true, trigger: accelerator }),
   hotkeyReset: async () => ({ ok: true, trigger: 'Alt+Space' }),
+  // ===== v1.7.5 降级 mock =====
+  onAutoCleanDone: () => {},
+  dedupeStart: async () => ({ ok: true, canceled: false, truncated: false, scanned: 0, groups: [] }),
+  dedupeCancel: async () => ({ ok: false, error: '当前没有进行中的查重' }),
+  onDedupeProgress: () => {},
 };
 
 const mioEl = document.getElementById('mio');
@@ -161,7 +167,7 @@ function escHtml(s) {
 // 声明放在前面：tickClock 会在启动阶段立即调用 chimeTick，不能等到文件末尾才初始化
 const pad2 = (n) => String(n).padStart(2, '0');
 // 只有这些键属于「设置」，其余是 meta（isPackaged / version …），不能混进 settings
-const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather'];
+const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather', 'autoClean'];
 let settings = {
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
@@ -175,6 +181,7 @@ let settings = {
   hotkey: { trigger: 'Alt+Space' },
   consent: { permsIntroSeen: false },
   weather: { enabled: true, city: null, interval: 60, unit: 'c' },
+  autoClean: { enabled: false, pausedUntil: null, lastRun: null },
 };
 let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '', displays: [], permissions: null, hotkeyRegistered: true };
 let gazeEnabled = true; // 视线跟随开关，由 appearance.gaze 决定
@@ -310,6 +317,7 @@ function renderSettings() {
     const node = el(`sgBrief-${k}`);
     if (node) node.textContent = briefs[k];
   });
+  renderAutoCleanCard(); // v1.7.5：清理 tab 的「定时清理」卡片状态跟随设置
 }
 
 async function loadSettings() {
@@ -2209,6 +2217,253 @@ bindSeg('segClipLimit', ['clipboard', 'limit']);
 bindSeg('segCapture', ['capture', 'mode']);
 bindSeg('segNotifyStyle', ['notify', 'style']);
 bindSeg('segPomoWork', ['pomodoro', 'work']);
+
+// ==================================================================
+// v1.7.5 A：定时清理计划（清理 tab 卡片：开关 + 暂停 7 天 + 上次执行回溯）
+// ==================================================================
+function autoCleanPaused() {
+  const ac = settings.autoClean || {};
+  return !!(ac.pausedUntil && Number(ac.pausedUntil) > Date.now());
+}
+
+function renderAutoCleanCard() {
+  const ac = settings.autoClean || {};
+  const sw = document.getElementById('swAutoClean');
+  if (sw) sw.checked = !!ac.enabled;
+  const pauseBtn = document.getElementById('autoCleanPause');
+  const pauseNote = document.getElementById('autoCleanPauseNote');
+  const lastEl = document.getElementById('autoCleanLast');
+  const paused = autoCleanPaused();
+  if (pauseBtn) pauseBtn.textContent = paused ? '恢复自动清理' : '暂停 7 天';
+  if (pauseNote) {
+    pauseNote.hidden = !paused;
+    if (paused) {
+      const until = new Date(Number(ac.pausedUntil));
+      pauseNote.textContent = `已暂停到 ${until.getMonth() + 1}月${until.getDate()}日，期间不自动执行（手动扫描不受影响）`;
+    }
+  }
+  if (lastEl) {
+    const lr = ac.lastRun;
+    if (lr && lr.t) {
+      const d = new Date(Number(lr.t));
+      const time = `${d.getMonth() + 1}/${d.getDate()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+      const names = (lr.items || []).slice(0, 3).join('、') + ((lr.items || []).length > 3 ? ' 等' : '');
+      lastEl.textContent = `上次自动清理：${time} · 释放 ${fmtBytes(Number(lr.freed) || 0)} · 清了 ${names || '—'}`;
+    } else {
+      lastEl.textContent = '上次自动清理：还没有记录';
+    }
+  }
+}
+
+bindSwitch('swAutoClean', ['autoClean', 'enabled'], (on) => {
+  say(on ? '好，下次启动时我会悄悄清一遍缓存' : '已关闭定时清理');
+});
+
+const autoCleanPauseBtn = document.getElementById('autoCleanPause');
+if (autoCleanPauseBtn) autoCleanPauseBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  if (autoCleanPaused()) {
+    await patchSettings({ autoClean: { pausedUntil: null } });
+    say('已恢复自动清理');
+  } else {
+    await patchSettings({ autoClean: { pausedUntil: Date.now() + 7 * 86400000 } });
+    say('已暂停 7 天，手动扫描不受影响', 3200);
+  }
+});
+
+// 主进程静默清理完成（只碰绿色梯队）→ 气泡 + 刷新记录；绝不弹窗、不弹系统通知
+if (typeof api.onAutoCleanDone === 'function') {
+  api.onAutoCleanDone((d) => {
+    window.__autoCleanEvents = (window.__autoCleanEvents || 0) + 1;
+    if (d && Number(d.moved) > 0) {
+      say(`我刚悄悄清了 ${fmtBytes(Number(d.freed) || 0)} 缓存，详见清理记录`, 4200);
+    }
+    refreshCleanHistory();
+    renderAutoCleanCard();
+  });
+}
+
+// ==================================================================
+// v1.7.5 B：重复文件查重（三级漏斗 · 只出报告 · 可随时中止）
+// ==================================================================
+let dedupeGroups = [];       // [{ size, wasted, files:[{path,name,mtime}], checked:Set<fileIdx> }]
+let dedupeRunning = false;
+let dedupeScope = 'common';  // common = 常用目录预设 | home = 整个用户目录
+
+function dedupeCheckedCount() {
+  return dedupeGroups.reduce((a, g) => a + g.checked.size, 0);
+}
+
+function updateDedupeBtn() {
+  const btn = document.getElementById('dedupeBtn');
+  if (!btn) return;
+  const n = dedupeCheckedCount();
+  btn.hidden = n === 0;
+  btn.textContent = `移入废纸篓（勾选 ${n} 项）`;
+}
+
+function renderDedupeGroups() {
+  const list = document.getElementById('dedupeList');
+  if (!list) return;
+  list.innerHTML = dedupeGroups.map((g, gi) => {
+    const allOn = g.checked.size === g.files.length;
+    const rows = g.files.map((f, fi) => `
+      <div class="pick-item ${g.checked.has(fi) ? 'checked' : ''}" data-gi="${gi}" data-fi="${fi}">
+        <span class="p-check">${g.checked.has(fi) ? '✓' : ''}</span>
+        <div class="p-info">
+          <div class="p-name">${escHtml(f.name)}${fi === 0 ? ' <span class="ddu-newest">最新</span>' : ''}</div>
+          <div class="p-note">${escHtml(f.path)}</div>
+        </div>
+        <span class="p-size">${fmtBytes(g.size)}</span>
+      </div>`).join('');
+    return `<div class="ddu-group">
+      <div class="ddu-head ${allOn ? 'checked' : ''}" data-gi="${gi}">
+        <span class="p-check">${allOn ? '✓' : ''}</span>
+        <span class="ddu-title">${g.files.length} 个副本 · 浪费 ${fmtBytes(g.wasted)}</span>
+      </div>
+      ${rows}
+    </div>`;
+  }).join('');
+  updateDedupeBtn();
+}
+
+// 扫描范围切换（局部态，不落盘 —— 查重是低频重操作，不值得为它涨设置树）
+const segDedupeScope = document.getElementById('segDedupeScope');
+if (segDedupeScope) segDedupeScope.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-v]');
+  if (!btn) return;
+  e.stopPropagation();
+  interact();
+  dedupeScope = btn.dataset.v === 'home' ? 'home' : 'common';
+  [...segDedupeScope.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b === btn));
+});
+if (segDedupeScope) [...segDedupeScope.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === dedupeScope));
+
+const dedupeScanBtn = document.getElementById('dedupeScanBtn');
+if (dedupeScanBtn) dedupeScanBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  if (dedupeRunning) return;
+  dedupeRunning = true;
+  const stopBtn = document.getElementById('dedupeStopBtn');
+  const prog = document.getElementById('dedupeProg');
+  const summary = document.getElementById('dedupeSummary');
+  const list = document.getElementById('dedupeList');
+  const trashBtn = document.getElementById('dedupeBtn');
+  dedupeScanBtn.disabled = true;
+  dedupeScanBtn.textContent = '扫描中…';
+  if (stopBtn) stopBtn.hidden = false;
+  if (prog) { prog.hidden = false; prog.textContent = '正在扫文件…'; }
+  if (summary) summary.textContent = `扫描中…（${dedupeScope === 'home' ? '整个用户目录' : '常用目录'} · 只统计 >1MB）`;
+  if (list) list.innerHTML = '';
+  if (trashBtn) trashBtn.hidden = true;
+  setState('thinking');
+  dedupeGroups = [];
+  let r = null;
+  try { r = await api.dedupeStart({ scope: dedupeScope }); } catch { r = null; }
+  dedupeRunning = false;
+  dedupeScanBtn.disabled = false;
+  dedupeScanBtn.textContent = '重新扫描';
+  if (stopBtn) stopBtn.hidden = true;
+  if (prog) prog.hidden = true;
+  setState('idle');
+  if (r && r.canceled) {
+    if (summary) summary.textContent = '已停止，可以随时重新扫描';
+    return;
+  }
+  if (!r || !r.ok) {
+    const msg = (r && r.error) || '扫描没有完成，请再试一次';
+    if (summary) summary.textContent = msg;
+    say(msg, 3000);
+    return;
+  }
+  dedupeGroups = (r.groups || []).map((g) => ({
+    ...g,
+    checked: new Set(g.files.map((_, fi) => fi).slice(1)), // 默认保留最新一份（第 0 份），勾选其余
+  }));
+  if (summary) {
+    if (!dedupeGroups.length) {
+      summary.textContent = r.truncated
+        ? '已扫描 2 万个文件，先到这里 —— 没发现重复'
+        : '没有发现内容相同的重复文件';
+    } else {
+      const wasted = dedupeGroups.reduce((a, g) => a + g.wasted, 0);
+      summary.textContent = `发现 ${dedupeGroups.length} 组重复，共浪费 ${fmtBytes(wasted)}`
+        + (r.truncated ? '（已扫描 2 万个文件，先到这里）' : '');
+    }
+  }
+  renderDedupeGroups();
+  if (dedupeGroups.length) say(`扫出 ${dedupeGroups.length} 组重复，勾选后我帮你清`, 3600);
+});
+
+const dedupeStopBtn = document.getElementById('dedupeStopBtn');
+if (dedupeStopBtn) dedupeStopBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  const r = await api.dedupeCancel();
+  if (r && r.ok) { dedupeStopBtn.disabled = true; say('好的，正在收尾停止', 2200); }
+  else say((r && r.error) || '当前没有进行中的扫描', 2200);
+  setTimeout(() => { if (dedupeStopBtn) dedupeStopBtn.disabled = false; }, 1200);
+});
+
+// 进度推送：已扫文件数 / 当前阶段（后台分片扫描，随时可停）
+if (typeof api.onDedupeProgress === 'function') {
+  api.onDedupeProgress((p) => {
+    const prog = document.getElementById('dedupeProg');
+    if (!prog || !p) return;
+    if (p.phase === 'done' || !dedupeRunning) { prog.hidden = true; return; }
+    const label = { collect: '正在扫文件', head: '比对文件头', full: '计算 SHA-256' }[p.phase] || p.phase;
+    prog.hidden = false;
+    prog.textContent = p.phase === 'collect'
+      ? `${label}… 已看 ${p.scanned} 个文件`
+      : `${label}… ${p.done || 0}/${p.total || 0}`;
+  });
+}
+
+// 勾选交互：文件行单选 / 组头整组切换
+const dedupeListEl = document.getElementById('dedupeList');
+if (dedupeListEl) dedupeListEl.addEventListener('click', (e) => {
+  interact();
+  const item = e.target.closest('.pick-item');
+  if (item) {
+    const g = dedupeGroups[Number(item.dataset.gi)];
+    const fi = Number(item.dataset.fi);
+    if (!g || !Number.isInteger(fi)) return;
+    g.checked.has(fi) ? g.checked.delete(fi) : g.checked.add(fi);
+    renderDedupeGroups();
+    return;
+  }
+  const head = e.target.closest('.ddu-head');
+  if (head) {
+    const g = dedupeGroups[Number(head.dataset.gi)];
+    if (!g) return;
+    const allOn = g.checked.size === g.files.length;
+    g.checked.clear();
+    if (!allOn) g.files.forEach((_, fi) => g.checked.add(fi));
+    renderDedupeGroups();
+  }
+});
+
+// 删除：只走现有 clean-paths + 二次确认通道（黄队口径：列完整路径），一个字节都不自己删
+const dedupeTrashBtn = document.getElementById('dedupeBtn');
+if (dedupeTrashBtn) dedupeTrashBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  const entries = [];
+  dedupeGroups.forEach((g) => g.checked.forEach((fi) => {
+    const f = g.files[fi];
+    if (f) entries.push({ path: f.path, name: f.name, size: g.size });
+  }));
+  if (!entries.length) return;
+  await trashWithConfirm(entries, { level: 'yellow', title: '清理重复文件' });
+  dedupeGroups = [];
+  if (dedupeListEl) dedupeListEl.innerHTML = '';
+  updateDedupeBtn();
+  const summary = document.getElementById('dedupeSummary');
+  if (summary) summary.textContent = '已移入废纸篓，可重新扫描确认';
+  refreshCleanHistory();
+});
 
 loadSettings();
 

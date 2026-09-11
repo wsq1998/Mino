@@ -3,6 +3,7 @@ const { app, BrowserWindow, ipcMain, Menu, Notification, globalShortcut, screen,
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto'); // v1.7.5 查重：前 4KB 指纹 + 全量 sha256（Node 内置，零依赖）
 const { execSync, exec, execFile, execFileSync } = require('child_process');
 
 const WIN_W = 320;
@@ -31,10 +32,10 @@ function saveState(patch) {
 // 默认值是「骨架」，用户配置叠上去，缺失字段自动补齐 —— v1.4 只有 chime/health/stealth
 // 三组，读进来就会自动长出 general/appearance 等新组，老配置文件零改动可用。
 // v1.6 再叠一层：clipboard/capture/hotkey/pomodoro/consent 五个新区，老键名一个不动。
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
 
 const DEFAULT_SETTINGS = {
-  _v: 4,
+  _v: 5,
   general: { autoOpen: false },
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
@@ -64,6 +65,13 @@ const DEFAULT_SETTINGS = {
     city: null,        // null = 自动（IP 定位到城市级，精度对「今天要不要带伞」够用）
     interval: 60,      // 30 | 60 | 120 分钟
     unit: 'c',         // c | f
+  },
+  // v1.7.5 定时清理计划（路线图 §6.4 六条决策）：只放行绿色梯队（缓存/日志）；
+  // 只在 Mio 启动时补跑（每天至多一次，错过顺延下次启动）；默认关闭；静默执行
+  autoClean: {
+    enabled: false,
+    pausedUntil: null, // 毫秒时间戳：暂停到该时刻（「暂停 7 天」温和档位；手动扫描不受影响）
+    lastRun: null,     // { t, freed, moved, items } —— 面板回溯「上次自动清理：时间/释放/清了什么」
   },
 };
 
@@ -95,6 +103,13 @@ function normUnit(v, lo, hi, fallback) {
 function sanitizeSettings(s) {
   s.appearance.opacity = normUnit(s.appearance.opacity, 0.3, 1, 1);
   s.stealth.opacity = normUnit(s.stealth.opacity, 0.05, 0.9, 0.12);
+  // v1.7.5 autoClean：脏数据收口 —— lastRun 只许对象或 null，pausedUntil 只许未过期的正数毫秒或 null
+  if (s.autoClean && typeof s.autoClean === 'object') {
+    s.autoClean.enabled = !!s.autoClean.enabled;
+    const pu = Number(s.autoClean.pausedUntil);
+    s.autoClean.pausedUntil = Number.isFinite(pu) && pu > Date.now() ? pu : null;
+    if (!s.autoClean.lastRun || typeof s.autoClean.lastRun !== 'object') s.autoClean.lastRun = null;
+  }
   return s;
 }
 
@@ -737,11 +752,14 @@ function readCleanHistory() {
 }
 
 // 清理执行成功后追加记录（items: [{name, size, path?}]）
-function recordClean(items) {
+// tag：可选附加标记，自动清理传 { auto: true }，历史里能区分「Mio 自己清的」
+function recordClean(items, tag = null) {
   try {
     const data = readCleanHistory();
     const total = items.reduce((a, i) => a + (i.size || 0), 0);
-    data.records.unshift({ t: Date.now(), items, total });
+    const rec = { t: Date.now(), items, total };
+    if (tag && typeof tag === 'object') Object.assign(rec, tag);
+    data.records.unshift(rec);
     if (data.records.length > 100) data.records.length = 100;
     data.totalFreed += total;
     fs.writeFileSync(cleanHistoryFile, JSON.stringify(data));
@@ -757,10 +775,12 @@ ipcMain.handle('clean-history-get', () => {
 
 // 清理 = 把目标目录下的"子项"逐个移入废纸篓（目录本身保留）
 // sizes：渲染层扫描时已知的大小映射（id -> bytes），用于 C5 记录释放量
-ipcMain.handle('clean-execute', async (_e, ids, sizes = {}) => {
+// v1.7.5：抽出 executeCleanIds —— IPC 通道与定时清理计划共用同一条删除路径，
+// 自动清理绝不另写一条（约束 2：只进废纸篓 + 必落清理历史）
+async function executeCleanIds(ids, sizes = {}, targets = SCAN_TARGETS, historyTag = null) {
   const report = [];
   for (const id of ids) {
-    const t = SCAN_TARGETS.find((x) => x.id === id);
+    const t = targets.find((x) => x.id === id);
     if (!t || !fs.existsSync(t.dir)) continue;
     let moved = 0, failed = 0;
     let children = [];
@@ -779,12 +799,14 @@ ipcMain.handle('clean-execute', async (_e, ids, sizes = {}) => {
   }
   const histItems = report.filter((r) => r.moved > 0).map((r) => ({ name: r.name, size: Number(sizes[r.id]) || 0 }));
   if (histItems.length) {
-    recordClean(histItems);
+    recordClean(histItems, historyTag);
     adviceCache.t = 0; // 清理后让建议引擎下次重算
     logMessage('Mio · 清理完成', `已移入废纸篓 ${report.reduce((a, r) => a + r.moved, 0)} 项`);
   }
   return report;
-});
+}
+
+ipcMain.handle('clean-execute', (_e, ids, sizes = {}) => executeCleanIds(ids, sizes));
 
 // ============ 清理安全：路径黑名单（展示与执行共用）============
 function isBlacklistedPath(p) {
@@ -1723,6 +1745,238 @@ ipcMain.handle('act-screenshot', (_e, payload) => actScreenshot(payload && paylo
 ipcMain.handle('trash-size', () => trashSize());
 ipcMain.handle('trash-empty', () => emptyTrash());
 
+// ============ v1.7.5 A：定时清理计划（只放行绿色梯队） ============
+// 设计边界（路线图 §6.4，六条决策全部固化）：
+// ① 范围只放行绿色梯队（缓存/日志），黄/红梯队碰都不许碰；
+// ② 默认静默：球体气泡 + 清理历史，不弹窗、不弹系统通知、不打断；
+// ③ 调度只在 Mio 启动时补跑（每天至多一次，错过顺延下次启动），不做常驻守护定时器；
+// ④ lastRun 记录「时间/释放/清了什么」供面板回溯；
+// ⑤ 默认关闭 + 「暂停 7 天」温和档位（暂停只停自动跑，手动扫描不受影响）；
+// ⑥ 自动执行不走二次确认 —— 只碰绿色梯队且只进废纸篓，但每次必落清理历史。
+const AUTOCLEAN_DAY_GAP = 24 * 3600 * 1000; // 启动补跑节奏：每天至多一次
+
+function autoCleanTargets() {
+  return SCAN_TARGETS.filter((t) => t.level === 'green');
+}
+
+// 自动清理执行体。targetOverrides 仅供 MIO_AUTOTEST 构造假目标；
+// 即便传入也照样过滤 level==='green' —— 绿队门禁是硬性的，测试也要过这道门。
+// 复用 clean-scan 的 dirSize 量体积 + executeCleanIds 执行（与手动清理同一条废纸篓通道）
+async function runAutoClean(targetOverrides = null) {
+  const ac = getSettings().autoClean || {};
+  if (!ac.enabled) return { ok: false, skipped: 'disabled' };
+  if (ac.pausedUntil && Number(ac.pausedUntil) > Date.now()) return { ok: false, skipped: 'paused' };
+  // 真实补跑（无 overrides）：距上次执行不足 24h 则顺延，避免每次启动都清
+  if (!targetOverrides && ac.lastRun && Date.now() - Number(ac.lastRun.t || 0) < AUTOCLEAN_DAY_GAP) {
+    return { ok: false, skipped: 'recent' };
+  }
+  const pool = Array.isArray(targetOverrides) && targetOverrides.length ? targetOverrides : autoCleanTargets();
+  const targets = pool.filter((t) => t && t.level === 'green' && typeof t.dir === 'string'); // 硬门禁：只放行绿色
+  if (!targets.length) return { ok: false, skipped: 'no-targets' };
+  const sizes = {};
+  for (const t of targets) {
+    sizes[t.id] = fs.existsSync(t.dir) ? (await dirSize(t.dir, 6000)).size : 0;
+  }
+  const report = await executeCleanIds(targets.map((t) => t.id), sizes, targets, { auto: true });
+  const moved = report.reduce((a, r) => a + r.moved, 0);
+  const freed = report.filter((r) => r.moved > 0).reduce((a, r) => a + (Number(sizes[r.id]) || 0), 0);
+  if (moved > 0) {
+    const items = report.filter((r) => r.moved > 0).map((r) => r.name);
+    patchSettings({ autoClean: { lastRun: { t: Date.now(), freed, moved, items } } });
+    // 静默通知：只走球体气泡通道（渲染层 say + 刷新清理记录），不弹系统通知、不打断
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('auto-clean-done', { t: Date.now(), freed, moved, items });
+    }
+  }
+  return { ok: true, moved, freed, report };
+}
+
+// ============ v1.7.5 B：重复文件查重（三级漏斗 · 只读 · 可中止） ============
+// 性能与安全是命门（路线图 §6.3）：
+// 漏斗 ① 按大小分桶（只统计 >1MB，readdir/stat 为主，秒级）
+// 漏斗 ② 同尺寸组算前 4KB 指纹（sha256 只读 4KB）
+// 漏斗 ③ 仍相同的才做全量 sha256（Node 内置 crypto，只对极少数文件做）
+// 安全：只读文件、不写不移动；删除只能由用户勾选后走 clean-paths + 二次确认；
+// 排除 ~/Library、隐藏目录（. 开头）、~/.Trash、符号链接、node_modules；
+// 扫描文件数上限 20000 防失控；后台分片循环（setImmediate 让出事件循环，不卡主进程）。
+const DEDUPE_MIN_SIZE = 1024 * 1024;  // 漏斗 ①：只统计 >1MB 的文件
+const DEDUPE_MAX_FILES = 20000;       // 扫描文件数上限（防失控）
+const DEDUPE_HEAD_BYTES = 4096;       // 漏斗 ②：前 4KB 指纹
+let dedupeState = { running: false, canceled: false, progress: { phase: 'idle', scanned: 0, total: 0, done: 0 } };
+const yieldTick = () => new Promise((r) => setImmediate(r)); // 每处理一片就让出事件循环
+
+function dedupeEmitProgress(patch) {
+  dedupeState.progress = { ...dedupeState.progress, ...patch };
+  if (win && !win.isDestroyed()) win.webContents.send('dedupe-progress', dedupeState.progress);
+}
+
+// 默认只扫「常用目录」预设；用户可勾选扩展到整个用户目录（scope:'home'）
+function commonScanRoots() {
+  return ['Desktop', 'Downloads', 'Documents', 'Pictures', 'Movies']
+    .map((d) => path.join(HOME, d))
+    .filter((d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } });
+}
+
+// 范围硬排除：~/Library、~/.Trash（隐藏目录与 node_modules 在遍历层按名字剔除）
+function isDedupeExcluded(dir) {
+  const lib = path.join(HOME, 'Library');
+  const trash = path.join(HOME, '.Trash');
+  return dir === lib || dir.startsWith(lib + path.sep) || dir === trash || dir.startsWith(trash + path.sep);
+}
+
+// 漏斗 ①：收集候选（>1MB 的普通文件）。分片让出事件循环；canceled() 随时叫停；
+// 符号链接不跟随、隐藏目录/node_modules 整枝剪掉、达到 2 万上限就停
+async function collectDedupeCandidates(roots, canceled) {
+  const candidates = [];
+  let seen = 0;
+  let stopped = ''; // '' | 'canceled' | 'limit'
+  outer: for (const root of roots) {
+    const stack = [root];
+    while (stack.length) {
+      if (canceled()) { stopped = 'canceled'; break outer; }
+      if (seen >= DEDUPE_MAX_FILES) { stopped = 'limit'; break outer; }
+      const dir = stack.pop();
+      if (isDedupeExcluded(dir)) continue;
+      let entries;
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        if (canceled()) { stopped = 'canceled'; break outer; }
+        if (seen >= DEDUPE_MAX_FILES) { stopped = 'limit'; break outer; }
+        if (e.name.startsWith('.') || e.name === 'node_modules') continue; // 隐藏 / node_modules
+        if (e.isSymbolicLink()) continue;                                   // 符号链接一律跳过
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) { stack.push(p); continue; }
+        if (!e.isFile()) continue;
+        seen++;
+        if (seen % 300 === 0) { // 每 300 个文件让出一次事件循环 + 推进度
+          dedupeEmitProgress({ phase: 'collect', scanned: seen, total: 0, done: 0 });
+          await yieldTick();
+        }
+        try {
+          const st = await fs.promises.stat(p);
+          if (st.isFile() && st.size > DEDUPE_MIN_SIZE) {
+            candidates.push({ path: p, size: st.size, mtime: st.mtimeMs });
+          }
+        } catch {}
+      }
+    }
+  }
+  return { candidates, seen, stopped };
+}
+
+// 漏斗 ②：只读前 4KB 算指纹
+async function hashHead(p) {
+  const fh = await fs.promises.open(p, 'r');
+  try {
+    const buf = Buffer.alloc(DEDUPE_HEAD_BYTES);
+    const { bytesRead } = await fh.read(buf, 0, DEDUPE_HEAD_BYTES, 0);
+    return crypto.createHash('sha256').update(bytesRead === DEDUPE_HEAD_BYTES ? buf : buf.subarray(0, bytesRead)).digest('hex');
+  } finally {
+    await fh.close();
+  }
+}
+
+// 漏斗 ③：全量 sha256（流式，不整读进内存）
+function hashFile(p) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const stream = fs.createReadStream(p);
+    stream.on('data', (c) => h.update(c));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(h.digest('hex')));
+  });
+}
+
+async function startDedupe(opts = {}) {
+  if (dedupeState.running) return { ok: false, error: '已有一次查重在进行中，请先等它结束或点停止' };
+  const roots = Array.isArray(opts.roots) && opts.roots.length
+    ? opts.roots.map((r) => String(r))
+    : (opts.scope === 'home' ? [HOME] : commonScanRoots());
+  dedupeState = { running: true, canceled: false, progress: { phase: 'collect', scanned: 0, total: 0, done: 0 } };
+  dedupeEmitProgress({});
+  const canceled = () => dedupeState.canceled;
+  const finish = (result) => {
+    dedupeState.running = false;
+    dedupeEmitProgress({ phase: 'done', scanned: result.scanned || 0, total: 0, done: 0 });
+    return result;
+  };
+  try {
+    // ① 大小分桶
+    const { candidates, seen, stopped } = await collectDedupeCandidates(roots, canceled);
+    if (stopped) return finish({ ok: true, canceled: stopped === 'canceled', truncated: stopped === 'limit', scanned: seen, groups: [] });
+    const sizeBuckets = new Map();
+    for (const c of candidates) {
+      if (!sizeBuckets.has(c.size)) sizeBuckets.set(c.size, []);
+      sizeBuckets.get(c.size).push(c);
+    }
+    const sizeGroups = [...sizeBuckets.values()].filter((a) => a.length > 1);
+    // ② 前 4KB 指纹
+    const headTotal = sizeGroups.reduce((a, g) => a + g.length, 0);
+    let headDone = 0;
+    dedupeEmitProgress({ phase: 'head', scanned: seen, total: headTotal, done: 0 });
+    const headGroups = [];
+    for (const g of sizeGroups) {
+      if (canceled()) return finish({ ok: true, canceled: true, truncated: false, scanned: seen, groups: [] });
+      const byHead = new Map();
+      for (const c of g) {
+        try {
+          const h = await hashHead(c.path);
+          if (!byHead.has(h)) byHead.set(h, []);
+          byHead.get(h).push(c);
+        } catch {}
+      }
+      for (const arr of byHead.values()) {
+        if (arr.length > 1) headGroups.push(arr);
+      }
+      headDone += g.length;
+      dedupeEmitProgress({ phase: 'head', scanned: seen, total: headTotal, done: headDone });
+      await yieldTick();
+    }
+    // ③ 全量 sha256（只对极少数漏到这一层的文件）
+    const fullTotal = headGroups.reduce((a, g) => a + g.length, 0);
+    let fullDone = 0;
+    dedupeEmitProgress({ phase: 'full', scanned: seen, total: fullTotal, done: 0 });
+    const fullBuckets = new Map();
+    for (const g of headGroups) {
+      for (const c of g) {
+        if (canceled()) return finish({ ok: true, canceled: true, truncated: false, scanned: seen, groups: [] });
+        try {
+          const h = await hashFile(c.path);
+          const key = `${c.size}|${h}`;
+          if (!fullBuckets.has(key)) fullBuckets.set(key, []);
+          fullBuckets.get(key).push(c);
+        } catch {}
+        fullDone++;
+        if (fullDone % 5 === 0) {
+          dedupeEmitProgress({ phase: 'full', scanned: seen, total: fullTotal, done: fullDone });
+          await yieldTick();
+        }
+      }
+    }
+    const groups = [...fullBuckets.values()]
+      .filter((a) => a.length > 1)
+      .map((a) => ({
+        size: a[0].size,
+        wasted: a[0].size * (a.length - 1),
+        files: a
+          .map((c) => ({ path: c.path, name: path.basename(c.path), mtime: Math.round(c.mtime) }))
+          .sort((x, y) => y.mtime - x.mtime), // 最新在前：渲染层默认保留第 0 份
+      }))
+      .sort((x, y) => y.wasted - x.wasted);
+    return finish({ ok: true, canceled: false, truncated: false, scanned: seen, groups });
+  } catch {
+    dedupeState.running = false;
+    return { ok: false, error: '查重没有完成，请再试一次' };
+  }
+}
+
+ipcMain.handle('dedupe-start', (_e, payload) => startDedupe(payload || {}));
+ipcMain.handle('dedupe-cancel', () => {
+  if (!dedupeState.running) return { ok: false, error: '当前没有进行中的查重' };
+  dedupeState.canceled = true; // 协作式取消：当前分片收尾后停下，不再推进度
+  return { ok: true };
+});
+
 // ============ v1.6 B2-3：召唤快捷键（录制器 + 原子回滚）============
 const DEFAULT_HOTKEY = 'Alt+Space';
 const RESERVED_HOTKEY = 'Alt+H'; // ⌥H 恒定兜底，不可覆盖
@@ -1795,6 +2049,11 @@ app.whenReady().then(() => {
   // v1.7 磁盘 IO：后台 15s 采样，system-full 只读缓存
   sampleDiskIO();
   setInterval(sampleDiskIO, 15000);
+  // v1.7.5 定时清理：启动 ~15s 后补跑（避开启动高峰，不和采样/天气抢）。
+  // 每天至多一次、错过顺延；自检模式跳过（autotest 会用自己的假目标单独验证）
+  if (process.env.MIO_AUTOTEST !== '1') {
+    setTimeout(() => { runAutoClean().catch(() => {}); }, 15000);
+  }
   // v1.4 E：前台应用探测（实测 8.5ms/次，2s 一次成本可忽略）
   stealthTimer = setInterval(stealthTick, 2000);
 
@@ -2289,6 +2548,102 @@ app.whenReady().then(() => {
           privacyNote: document.getElementById('privacyNote').textContent.includes('从不上传'),
         })`));
         await shot('electron-v17-settings.png');
+
+        // ================= v1.8 断言（v1.7.5：定时清理计划 / 重复文件查重） =================
+        // schema v5：autoClean 长出、老键一个不丢、默认关闭
+        log('V18_SCHEMA: ' + JSON.stringify({
+          v: getSettings()._v,
+          hasAutoClean: 'autoClean' in getSettings(),
+          defaultOff: getSettings().autoClean.enabled === false && DEFAULT_SETTINGS.autoClean.enabled === false,
+          oldKept: ['general', 'appearance', 'chime', 'health', 'notify', 'stealth', 'clipboard', 'weather'].every((k) => k in getSettings()),
+        }));
+
+        // 定时清理：构造绿色梯队假数据走一遍（夹带一个黄队目标，验证绿队硬门禁）
+        const acPrev = { ...getSettings().autoClean };
+        const acBase = fs.mkdtempSync(path.join(os.tmpdir(), 'mio-ac-'));
+        const acGreenA = path.join(acBase, 'green-a');
+        const acGreenB = path.join(acBase, 'green-b');
+        const acYellow = path.join(acBase, 'yellow-fake');
+        fs.mkdirSync(acGreenA); fs.mkdirSync(acGreenB); fs.mkdirSync(acYellow);
+        fs.writeFileSync(path.join(acGreenA, 'cache-a.bin'), Buffer.alloc(2048, 'A'));
+        fs.writeFileSync(path.join(acGreenB, 'log-b.txt'), 'log line');
+        fs.writeFileSync(path.join(acYellow, 'keep-me.txt'), 'DO NOT TOUCH');
+        const acFakeTargets = [
+          { id: 'at-green-a', name: '假缓存', dir: acGreenA, level: 'green', note: '' },
+          { id: 'at-green-b', name: '假日志', dir: acGreenB, level: 'green', note: '' },
+          { id: 'at-yellow', name: '假黄队', dir: acYellow, level: 'yellow', note: '' },
+        ];
+        const acHistBefore = readCleanHistory().records.length;
+        patchSettings({ autoClean: { enabled: true, pausedUntil: null, lastRun: null } });
+        const acRun = await runAutoClean(acFakeTargets);
+        log('V18_AUTOCLEAN: ' + JSON.stringify({
+          ok: acRun.ok === true,
+          moved: acRun.moved,
+          greenEmptied: fs.readdirSync(acGreenA).length === 0 && fs.readdirSync(acGreenB).length === 0,
+          yellowUntouched: fs.existsSync(path.join(acYellow, 'keep-me.txt')), // 黄队纹丝不动
+          histInc: readCleanHistory().records.length === acHistBefore + 1,     // 清理历史 +1
+          histTaggedAuto: !!(readCleanHistory().records[0] && readCleanHistory().records[0].auto === true),
+          lastRunSet: !!getSettings().autoClean.lastRun,                       // 回溯字段落盘
+          bubble: (await js('window.__autoCleanEvents || 0')) >= 1,            // 气泡通道被调用
+        }));
+        // 暂停 7 天：期间不执行
+        patchSettings({ autoClean: { enabled: true, pausedUntil: Date.now() + 7 * 86400000 } });
+        const acHistMid = readCleanHistory().records.length;
+        fs.writeFileSync(path.join(acGreenA, 'again.bin'), 'x');
+        const acPaused = await runAutoClean(acFakeTargets);
+        log('V18_AUTOCLEAN_PAUSE: ' + JSON.stringify({
+          skipped: acPaused.skipped === 'paused',
+          histSame: readCleanHistory().records.length === acHistMid,
+        }));
+        patchSettings({ autoClean: acPrev }); // 还原现场
+
+        // 查重：3 个内容相同的 >1MB 文件 + 1 个同尺寸不同内容 + 1 个 <1MB 重复 + 隐藏目录/替身里的重复
+        const dBase = fs.mkdtempSync(path.join(os.tmpdir(), 'mio-dd-'));
+        const ddWrite = (name, buf) => { const p = path.join(dBase, name); fs.writeFileSync(p, buf); return p; };
+        const ddSame = Buffer.alloc(1200 * 1024, 7); ddSame.write('SAME-CONTENT-HEAD', 0);
+        const ddDiff = Buffer.alloc(1200 * 1024, 7); ddDiff.write('DIFFERENT-HEAD--', 0);
+        const ddF1 = ddWrite('a.bin', ddSame);
+        const ddF2 = ddWrite('b.bin', ddSame);
+        const ddF3 = ddWrite('c.bin', ddSame);
+        const ddFDiff = ddWrite('d.bin', ddDiff);
+        ddWrite('small.bin', ddSame.subarray(0, 512 * 1024)); // <1MB → 不该进组
+        fs.mkdirSync(path.join(dBase, '.hidden'));
+        fs.writeFileSync(path.join(dBase, '.hidden', 'h.bin'), ddSame); // 隐藏目录 → 排除
+        try { fs.symlinkSync(ddF1, path.join(dBase, 'link.bin')); } catch {} // 替身 → 排除
+
+        // cancel：起跑后立刻叫停 → 返回 canceled 且进度冻结
+        const ddP = startDedupe({ roots: [dBase] });
+        dedupeState.canceled = true;
+        const ddCanceled = await ddP;
+        const ddProgA = JSON.stringify(dedupeState.progress);
+        await sleep(200);
+        const ddProgB = JSON.stringify(dedupeState.progress);
+        log('V18_DEDUPE_CANCEL: ' + JSON.stringify({
+          canceled: ddCanceled.canceled === true,
+          notRunning: dedupeState.running === false,
+          frozen: ddProgA === ddProgB, // cancel 后不再推进度
+        }));
+
+        const ddRun = await startDedupe({ roots: [dBase] });
+        const ddGroups = (ddRun && ddRun.groups) || [];
+        const ddG0 = ddGroups[0];
+        log('V18_DEDUPE: ' + JSON.stringify({
+          ok: ddRun.ok === true,
+          oneGroup: ddGroups.length === 1,
+          members3: ddG0 ? ddG0.files.length === 3 : false,
+          diffExcluded: ddG0 ? !ddG0.files.some((f) => f.path === ddFDiff) : false,
+          smallExcluded: ddG0 ? !ddG0.files.some((f) => f.name === 'small.bin') : false,
+          hiddenExcluded: ddG0 ? !ddG0.files.some((f) => f.name === 'h.bin') : false,
+          linkExcluded: ddG0 ? !ddG0.files.some((f) => f.name === 'link.bin') : false,
+          wastedOk: ddG0 ? ddG0.wasted === ddSame.length * 2 : false,
+        }));
+        // sha256 与系统 shasum -a 256 抽查一致
+        const ddMine = await hashFile(ddF1);
+        let ddSys = '';
+        try { ddSys = execFileSync('/usr/bin/shasum', ['-a', '256', ddF1]).toString().trim().split(/\s+/)[0]; } catch {}
+        log('V18_DEDUPE_HASH: ' + JSON.stringify({ match: ddMine === ddSys && ddSys.length === 64 }));
+        // 测试数据只走废纸篓通道收尾（绝不 rm）
+        for (const p of [ddF1, ddF2, ddF3, ddFDiff]) { try { await shell.trashItem(p); } catch {} }
 
         log('AUTOTEST_DONE');
         setTimeout(() => app.quit(), 600); // 自检跑完自动退出，便于脚本化

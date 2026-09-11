@@ -206,6 +206,34 @@
           <button class="btn danger wide" id="leftoverBtn" hidden>清理选中</button>
         </div>
       </div>
+      <!-- v1.7.5 定时清理计划（只放行绿色梯队；启动补跑；默认关闭） -->
+      <div class="card" id="autoCleanCard">
+        <div class="label">定时清理 <span class="safe-badge">只清缓存/日志</span></div>
+        <div class="set-row"><span>启动时自动清理</span><label class="switch"><input type="checkbox" id="swAutoClean"><i></i></label></div>
+        <div class="set-row"><span>暂停执行</span><button class="btn tiny" id="autoCleanPause">暂停 7 天</button></div>
+        <div class="set-note" id="autoCleanPauseNote" hidden>—</div>
+        <div id="autoCleanLast" class="sub">上次自动清理：还没有记录</div>
+        <div class="set-note">只在 Mio 启动时补跑（每天至多一次），静默执行：只碰缓存/日志等绿色梯队且只移入废纸篓，大文件等危险项永远需要手动确认。每次执行都会写进清理记录，随时可翻。</div>
+      </div>
+      <!-- v1.7.5 重复文件查重（三级漏斗 · 只出报告，删除走现有确认通道） -->
+      <div class="card expandable interactive-btn" id="dedupeCard" data-dv-title="重复文件">
+        <div class="label">重复文件 <span class="expand-hint">内容相同的副本</span></div>
+        <div id="dedupeSummary" class="sub">找出内容完全相同的文件，只出报告、绝不自动删</div>
+        <div class="detail">
+          <div class="set-row"><span>扫描范围</span>
+            <div class="seg" id="segDedupeScope">
+              <button data-v="common">常用目录</button><button data-v="home">整个用户目录</button>
+            </div>
+          </div>
+          <div class="set-note">默认只扫 桌面 / 下载 / 文稿 / 图片 / 影片；整个用户目录会自动跳过 资源库、隐藏目录、废纸篓、node_modules 和替身</div>
+          <button class="btn wide" id="dedupeScanBtn">开始扫描</button>
+          <button class="btn wide" id="dedupeStopBtn" hidden>停止</button>
+          <div id="dedupeProg" class="sub" hidden></div>
+          <div id="dedupeList" class="ddu-list"></div>
+          <button class="btn danger wide" id="dedupeBtn" hidden>移入废纸篓（勾选 0 项）</button>
+          <div class="set-note">查重只读文件、不改不删；每组默认勾选较旧的那几份（保留最新一份），可自行修改。删除一律走废纸篓 + 二次确认。</div>
+        </div>
+      </div>
       <div id="cleanList" class="clean-list"></div>
       <div id="cleanActions" hidden>
         <button class="btn danger wide" id="cleanBtn">清理选中</button>
@@ -408,7 +436,7 @@
         </div>
       </details>
 
-      <div class="set-more" id="setMore">定时清理计划 · 重复文件查重 · AI 助手 · 首次引导，将随后续版本陆续加入</div>
+      <div class="set-more" id="setMore">AI 助手 · 首次引导，将随后续版本陆续加入</div>
     </div>
     </div>
 
