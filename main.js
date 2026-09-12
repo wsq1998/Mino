@@ -2063,13 +2063,35 @@ let trashSizeCache = { t: 0, data: null };
 async function trashSize() {
   if (trashSizeCache.data && Date.now() - trashSizeCache.t < 30000) return trashSizeCache.data;
   const dir = path.join(HOME, '.Trash');
-  let data = { ok: true, bytes: 0, count: 0 };
+  let data = { ok: true, bytes: 0, count: 0, tcc: false };
+  // 1) 先用 fs 直读（有「完全磁盘访问」时最准，含体积）
   if (fs.existsSync(dir)) {
     const { size, files } = await dirSize(dir, 6000);
-    data = { ok: true, bytes: size, count: files };
+    if (files > 0 || size > 0) data = { ok: true, bytes: size, count: files, tcc: false };
+  }
+  // 2) fs 拿不到（TCC 未授权或确实为空）→ 用 Finder AppleScript 探测数量（绕过 TCC）
+  if (!(data.count > 0 || data.bytes > 0)) {
+    const viaFinder = await probeTrashCountViaFinder();
+    if (viaFinder.ok && viaFinder.count > 0) {
+      data = { ok: true, bytes: 0, count: viaFinder.count, tcc: true };
+    }
   }
   trashSizeCache = { t: Date.now(), data };
   return data;
+}
+
+// Finder AppleScript 探测废纸篓项数（绕过 Node fs 的 TCC「完全磁盘访问」限制）
+// 只在「自动化 · 控制 Finder」已授权时成功；失败返回 { ok: false, count: 0 }
+function probeTrashCountViaFinder() {
+  return new Promise((resolve) => {
+    execFile('/usr/bin/osascript',
+      ['-e', 'tell application "Finder" to count of items of trash'],
+      { timeout: 8000 }, (err, stdout) => {
+        if (err) return resolve({ ok: false, count: 0 });
+        const n = parseInt(String(stdout || '').trim(), 10);
+        resolve({ ok: !Number.isNaN(n), count: Number.isNaN(n) ? 0 : n });
+      });
+  });
 }
 
 function countTrashItems() {

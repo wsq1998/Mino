@@ -2,10 +2,10 @@
 // B4-4 拆分：从 main.js 抽出。零行为变化 —— 只搬定义，不动逻辑。
 // 依赖：无（不 require electron/app/win），保证纯函数可单测。
 
-const SETTINGS_VERSION = 6;
+const SETTINGS_VERSION = 7;
 
 const DEFAULT_SETTINGS = {
-  _v: 6,
+  _v: 7,
   general: { autoOpen: false },
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
@@ -23,7 +23,22 @@ const DEFAULT_SETTINGS = {
   // v1.6 C9：通知方式默认「两者」，保持 v1.5「系统通知 + 气泡」的既有行为，
   // 避免升级后默认通道变了让老用户以为提醒消失（PRD Q8）
   notify: { style: 'both' }, // bubble | system | both
-  pomodoro: { work: 25 },    // v1.6 C10：25 | 45 | 60（分钟）
+  pomodoro: { work: 25, enabled: true },    // v1.6 C10：25 | 45 | 60（分钟）；v1.9 新增 enabled：主面板番茄钟统计卡片开关
+  // v1.9 主面板功能开关：倒计时 / 快捷启动（launcher.items 是启动项数据源，点击用 open -a 启动）
+  countdown: { enabled: true },
+  launcher: {
+    enabled: true,
+    items: [
+      { id: 'safari', label: 'Safari', app: 'Safari' },
+      { id: 'chrome', label: 'Chrome', app: 'Google Chrome' },
+      { id: 'wechat', label: '微信', app: 'WeChat' },
+      { id: 'qq', label: 'QQ', app: 'QQ' },
+      { id: 'finder', label: '访达', app: 'Finder' },
+      { id: 'terminal', label: '终端', app: 'Terminal' },
+      { id: 'vscode', label: 'VS Code', app: 'Visual Studio Code' },
+      { id: 'mail', label: '邮件', app: 'Mail' },
+    ],
+  },
   stealth: { enabled: true, opacity: 0.12, apps: null }, // apps=null → 用内置名单
   // ===== v1.6 新增分组 =====
   clipboard: { enabled: true, limit: 10, filterPassword: false }, // E1/E2/E3
@@ -111,6 +126,22 @@ function sanitizeSettings(s) {
     if (typeof s.ai.baseUrl !== 'string' || !s.ai.baseUrl.trim()) s.ai.baseUrl = DEFAULT_SETTINGS.ai.baseUrl;
     if (typeof s.ai.model !== 'string' || !s.ai.model.trim()) s.ai.model = DEFAULT_SETTINGS.ai.model;
     if (typeof s.ai.persona !== 'string' || !s.ai.persona.trim()) s.ai.persona = DEFAULT_SETTINGS.ai.persona;
+  }
+  // v1.9 主面板功能开关：倒计时 / 快捷启动 / 番茄钟统计 —— 布尔收口
+  s.countdown.enabled = !!s.countdown.enabled;
+  s.launcher.enabled = !!s.launcher.enabled;
+  s.pomodoro.enabled = !!s.pomodoro.enabled;
+  // v1.9 launcher.items：数组收口 —— 只保留合法条目（id/app 非空字符串），空数组也合法（用户删光了）
+  if (!Array.isArray(s.launcher.items)) {
+    s.launcher.items = DEFAULT_SETTINGS.launcher.items.map((it) => ({ ...it }));
+  } else {
+    s.launcher.items = s.launcher.items
+      .filter((it) => it && typeof it === 'object' && String(it.app || '').trim() !== '')
+      .map((it) => ({
+        id: String(it.id || '').trim() || `app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        label: String(it.label || '').trim() || it.app,
+        app: String(it.app).trim(),
+      }));
   }
   return s;
 }

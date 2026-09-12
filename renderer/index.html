@@ -55,7 +55,7 @@
           <div class="sub">CPU · 内存</div>
         </div>
       </div>
-      <div class="card">
+      <div class="card" id="countdownCard">
         <div class="label">倒计时 <span id="alarmDot" class="dot"></span></div>
         <div class="reminder-row">
           <button class="btn reminder" data-min="5">5 分钟</button>
@@ -70,19 +70,10 @@
         </div>
         <div id="alarmInfo" class="sub">点击档位或输入分钟开始倒计时，收起面板/重启也不丢</div>
       </div>
-      <!-- v1.9：快捷启动 App（点击用 open -a 启动） -->
-      <div class="card">
+      <!-- v1.9：快捷启动 App（点击用 open -a 启动；按钮由 renderLaunchGrid() 动态渲染） -->
+      <div class="card" id="launcherCard">
         <div class="label">快捷启动</div>
-        <div class="launch-grid" id="launchGrid">
-          <button class="btn launch" data-app="Safari">Safari</button>
-          <button class="btn launch" data-app="Google Chrome">Chrome</button>
-          <button class="btn launch" data-app="微信">微信</button>
-          <button class="btn launch" data-app="QQ">QQ</button>
-          <button class="btn launch" data-app="访达">访达</button>
-          <button class="btn launch" data-app="终端">终端</button>
-          <button class="btn launch" data-app="Visual Studio Code">VS Code</button>
-          <button class="btn launch" data-app="邮件">邮件</button>
-        </div>
+        <div class="launch-grid" id="launchGrid"></div>
         <div id="launchInfo" class="sub">点击启动常用 App（未安装的会提示）</div>
       </div>
       <!-- v1.9：番茄钟统计与周报（点击钻入详情） -->
@@ -515,6 +506,27 @@
             </div>
           </div>
           <div class="set-note">数据源 wttr.in，免注册免 key；只把城市名发出去，其余一律本机处理</div>
+        </div>
+      </details>
+
+      <!-- v1.9 功能开关：主面板三个卡片显示/隐藏 + 快捷启动自定义 -->
+      <details class="sgroup" data-group="tools">
+        <summary class="sgroup-h"><span class="sg-name">功能开关</span><span class="sg-brief" id="sgBrief-tools"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>倒计时</span><label class="switch"><input type="checkbox" id="swCountdown"><i></i></label></div>
+          <div class="set-note">控制「常用」页的倒计时卡片显示</div>
+          <div class="set-row"><span>快捷启动</span><label class="switch"><input type="checkbox" id="swLauncher"><i></i></label></div>
+          <div class="set-note">控制「常用」页的快捷启动卡片显示</div>
+          <div class="set-row"><span>番茄钟统计</span><label class="switch"><input type="checkbox" id="swPomo"><i></i></label></div>
+          <div class="set-note">控制「常用」页的番茄钟统计卡片显示</div>
+          <div class="set-row"><span>添加快捷启动项</span><span class="set-val">App 名</span></div>
+          <div class="set-row"><input type="text" id="launchAppInput" class="stext" placeholder="如：Spotify / 备忘录" maxlength="60"></div>
+          <div class="stealth-actions">
+            <button class="btn tiny" id="launchAddBtn">添加</button>
+            <button class="btn tiny" id="launchResetBtn">恢复默认</button>
+          </div>
+          <div id="launchItemList" class="stealth-list"></div>
+          <div class="set-note" id="launchManageHint">App 名即 macOS 应用名（如微信是 WeChat、访达是 Finder）；删除走二次确认</div>
         </div>
       </details>
 

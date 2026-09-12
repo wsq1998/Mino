@@ -5,13 +5,27 @@
 const bridge = (window.mio && typeof window.mio.getStats === 'function') ? window.mio : null;
 // 浏览器预览模式的设置副本，让开关能真的拨动（含深合并，模拟主进程行为）
 const previewSettings = {
-  _v: 6,
+  _v: 7,
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null, material: 'glass' },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
   notify: { style: 'both' },
-  pomodoro: { work: 25 },
+  pomodoro: { work: 25, enabled: true },
+  countdown: { enabled: true },
+  launcher: {
+    enabled: true,
+    items: [
+      { id: 'safari', label: 'Safari', app: 'Safari' },
+      { id: 'chrome', label: 'Chrome', app: 'Google Chrome' },
+      { id: 'wechat', label: '微信', app: 'WeChat' },
+      { id: 'qq', label: 'QQ', app: 'QQ' },
+      { id: 'finder', label: '访达', app: 'Finder' },
+      { id: 'terminal', label: '终端', app: 'Terminal' },
+      { id: 'vscode', label: 'VS Code', app: 'Visual Studio Code' },
+      { id: 'mail', label: '邮件', app: 'Mail' },
+    ],
+  },
   stealth: { enabled: true, opacity: 0.12, apps: null },
   clipboard: { enabled: true, limit: 10, filterPassword: false },
   capture: { mode: 'region', dest: 'clipboard' },
@@ -163,7 +177,7 @@ const api = bridge || {
   onClipChanged: () => {}, onClipNotice: () => {},
   actLock: async () => ({ ok: true, locked: true, degraded: false, need: null }),
   actScreenshot: async () => ({ ok: true }),
-  trashSize: async () => ({ ok: true, bytes: 2.4e9, count: 148 }),
+  trashSize: async () => ({ ok: true, bytes: 2.4e9, count: 148, tcc: false }),
   trashEmpty: async () => ({ ok: true, removed: 148, failed: 0, need: null }),
   permStatus: async () => ({ ok: true, screen: 'granted', accessibility: true, automation: 'granted' }),
   permRequest: async () => ({ ok: true, status: true }),
@@ -212,14 +226,28 @@ function escHtml(s) {
 // 声明放在前面：tickClock 会在启动阶段立即调用 chimeTick，不能等到文件末尾才初始化
 const pad2 = (n) => String(n).padStart(2, '0');
 // 只有这些键属于「设置」，其余是 meta（isPackaged / version …），不能混进 settings
-const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather', 'autoClean', 'ai', 'onboarding'];
+const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather', 'autoClean', 'ai', 'onboarding', 'countdown', 'launcher'];
 let settings = {
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null, material: 'glass' },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
   notify: { style: 'both' },
-  pomodoro: { work: 25 },
+  pomodoro: { work: 25, enabled: true },
+  countdown: { enabled: true },
+  launcher: {
+    enabled: true,
+    items: [
+      { id: 'safari', label: 'Safari', app: 'Safari' },
+      { id: 'chrome', label: 'Chrome', app: 'Google Chrome' },
+      { id: 'wechat', label: '微信', app: 'WeChat' },
+      { id: 'qq', label: 'QQ', app: 'QQ' },
+      { id: 'finder', label: '访达', app: 'Finder' },
+      { id: 'terminal', label: '终端', app: 'Terminal' },
+      { id: 'vscode', label: 'VS Code', app: 'Visual Studio Code' },
+      { id: 'mail', label: '邮件', app: 'Mail' },
+    ],
+  },
   stealth: { enabled: true, opacity: 0.12, apps: null },
   clipboard: { enabled: true, limit: 10, filterPassword: false },
   capture: { mode: 'region', dest: 'clipboard' },
@@ -436,6 +464,10 @@ function renderSettings() {
   // v1.7：天气 / 权限 / 数据与隐私
   const wx = settings.weather || {};
   set('swWx', wx.enabled);
+  // v1.9：功能开关（倒计时 / 快捷启动 / 番茄钟统计）
+  set('swCountdown', settings.countdown.enabled);
+  set('swLauncher', settings.launcher.enabled);
+  set('swPomo', settings.pomodoro.enabled);
   const segWxM = el('segWxMode');
   const wxMode = wx.city ? 'manual' : 'auto';
   if (segWxM) [...segWxM.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === wxMode));
@@ -476,6 +508,7 @@ function renderSettings() {
     clipboard: settings.clipboard.enabled ? `开 · ${settings.clipboard.limit} 条${settings.clipboard.filterPassword ? ' · 过滤' : ''}` : '关',
     hotkey: accelLabel(settings.hotkey.trigger),
     weather: wx.enabled ? `${wx.city || '自动定位'} · ${wx.interval} 分` : '关',
+    tools: `${[settings.countdown.enabled && '倒计时', settings.launcher.enabled && '快捷启动', settings.pomodoro.enabled && '番茄钟'].filter(Boolean).join(' · ') || '全关'}`,
     perm: permBrief(),
     data: settingsMeta.userDataPath ? '全部在本机' : '—',
     about: settingsMeta.version ? `v${settingsMeta.version}` : '—',
@@ -485,7 +518,45 @@ function renderSettings() {
     const node = el(`sgBrief-${k}`);
     if (node) node.textContent = briefs[k];
   });
+  applyFeatureVisibility(); // v1.9：主面板三个功能卡片的显示/隐藏跟随设置
+  renderLaunchGrid();       // v1.9：快捷启动按钮从 launcher.items 动态渲染
+  renderLaunchItemList();   // v1.9：设置页快捷启动管理列表
   renderAutoCleanCard(); // v1.7.5：清理 tab 的「定时清理」卡片状态跟随设置
+}
+
+// v1.9：主面板功能开关 —— 倒计时 / 快捷启动 / 番茄钟统计 三张卡片显示/隐藏
+function applyFeatureVisibility() {
+  const countdownCard = document.getElementById('countdownCard');
+  const launcherCard = document.getElementById('launcherCard');
+  const pomoStatCard = document.getElementById('pomoStatCard');
+  if (countdownCard) countdownCard.hidden = !settings.countdown.enabled;
+  if (launcherCard) launcherCard.hidden = !settings.launcher.enabled;
+  if (pomoStatCard) pomoStatCard.hidden = !settings.pomodoro.enabled;
+}
+
+// v1.9：快捷启动按钮 —— 数据驱动渲染（数据源 settings.launcher.items）
+function renderLaunchGrid() {
+  const grid = document.getElementById('launchGrid');
+  if (!grid) return;
+  const items = (settings.launcher && settings.launcher.items) || [];
+  grid.innerHTML = items.length
+    ? items.map((it) => `<button class="btn launch" data-app="${escHtml(it.app)}" title="${escHtml(it.app)}">${escHtml(it.label)}</button>`).join('')
+    : '<div class="sub" style="margin-top:4px">暂无启动项，可在设置里添加</div>';
+}
+
+// v1.9：设置页快捷启动管理列表（每项可删除）
+function renderLaunchItemList() {
+  const box = document.getElementById('launchItemList');
+  if (!box) return;
+  const items = (settings.launcher && settings.launcher.items) || [];
+  box.innerHTML = items.length
+    ? items.map((it) => `
+      <div class="sl-item">
+        <span class="sl-name">${escHtml(it.label)}</span>
+        <span class="sl-id">${escHtml(it.app)}</span>
+        <button class="sl-del" data-id="${escHtml(it.id)}" title="移除">✕</button>
+      </div>`).join('')
+    : '<div class="sub">还没有自定义启动项</div>';
 }
 
 async function loadSettings() {
@@ -1895,11 +1966,29 @@ if (api.onAlarmFired) api.onAlarmFired(({ title, body }) => {
 refreshAlarm(); // 启动时恢复进行中的倒计时（重启不丢）
 
 // ============ v1.9：快捷启动 App ============
+// 内置默认启动项（与主进程 DEFAULT_SETTINGS.launcher.items 保持一致）：
+// App 名必须是 macOS 实际应用名（微信=WeChat / 访达=Finder / 终端=Terminal / 邮件=Mail），
+// 否则 open -a 会找不到程序。
+const DEFAULT_LAUNCH_ITEMS = [
+  { id: 'safari', label: 'Safari', app: 'Safari' },
+  { id: 'chrome', label: 'Chrome', app: 'Google Chrome' },
+  { id: 'wechat', label: '微信', app: 'WeChat' },
+  { id: 'qq', label: 'QQ', app: 'QQ' },
+  { id: 'finder', label: '访达', app: 'Finder' },
+  { id: 'terminal', label: '终端', app: 'Terminal' },
+  { id: 'vscode', label: 'VS Code', app: 'Visual Studio Code' },
+  { id: 'mail', label: '邮件', app: 'Mail' },
+];
 // 点击用主进程 `open -a <AppName>` 启动；未安装/启动失败弹气泡提示。
-document.querySelectorAll('.btn.launch').forEach((btn) => {
-  btn.addEventListener('click', async () => {
+// 按钮由 renderLaunchGrid() 动态渲染，这里用事件委托统一处理。
+const launchGrid = document.getElementById('launchGrid');
+if (launchGrid) {
+  launchGrid.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.btn.launch');
+    if (!btn) return;
     interact();
     const name = btn.dataset.app;
+    if (!name) return;
     if (!api.appLaunch) { say(`预览模式，无法启动 ${name}`, 2600); return; }
     const r = await api.appLaunch(name).catch(() => ({ ok: false }));
     const info = document.getElementById('launchInfo');
@@ -1911,7 +2000,55 @@ document.querySelectorAll('.btn.launch').forEach((btn) => {
       say(`${name} 好像没装哦`, 3000);
     }
   });
-});
+}
+
+// 添加启动项：校验非空 + 去重（按 app 名），落盘后重渲染
+async function addLaunchItem(app, label) {
+  const appName = String(app || '').trim();
+  const labelName = String(label || '').trim() || appName;
+  if (!appName) { say('先填 App 名', 1600); return; }
+  const items = ((settings.launcher && settings.launcher.items) || []).slice();
+  if (items.some((it) => it.app.toLowerCase() === appName.toLowerCase())) {
+    say(`「${appName}」已经在列表里了`, 2000);
+    return;
+  }
+  items.push({
+    id: `app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    label: labelName,
+    app: appName,
+  });
+  await patchSettings({ launcher: { items } });
+  say(`已添加 ${labelName}`, 1600);
+  const inp = document.getElementById('launchAppInput');
+  if (inp) inp.value = '';
+}
+
+// 删除快捷方式：二次确认后移除并重渲染
+async function removeLaunchItem(id) {
+  const items = ((settings.launcher && settings.launcher.items) || []).slice();
+  const target = items.find((it) => it.id === id);
+  if (!target) return;
+  const ok = await showConfirm({
+    title: `移除「${target.label}」？`,
+    body: `将从快捷启动列表移除 ${target.app}，可在「添加」里随时加回来。`,
+    okText: '移除',
+  });
+  if (!ok) return;
+  await patchSettings({ launcher: { items: items.filter((it) => it.id !== id) } });
+  say(`已移除 ${target.label}`, 1600);
+}
+
+// 恢复默认启动项列表
+async function resetLaunchItems() {
+  const ok = await showConfirm({
+    title: '恢复默认启动项？',
+    body: '将把快捷启动重置为内置的 8 个 App（Safari / Chrome / 微信 / QQ / 访达 / 终端 / VS Code / 邮件），你添加的自定义项会被移除。',
+    okText: '恢复默认',
+  });
+  if (!ok) return;
+  await patchSettings({ launcher: { items: DEFAULT_LAUNCH_ITEMS.map((it) => ({ ...it })) } });
+  say('已恢复默认启动项', 1600);
+}
 
 // ============ v1.4 C：健康提醒中心 ============
 // 三个独立定时器会变成通知轰炸（久坐 + 喝水 + 护眼 + 番茄钟 + 建议 + 磁盘告警），
@@ -2072,6 +2209,34 @@ bindRange('rngStealthOpacity', ['stealth', 'opacity'],
 
 // ===== v1.7：天气（F 组） =====
 bindSwitch('swWx', ['weather', 'enabled'], () => refreshWeatherCard(true));
+
+// ===== v1.9：功能开关（主面板卡片显示/隐藏） =====
+bindSwitch('swCountdown', ['countdown', 'enabled'], applyFeatureVisibility);
+bindSwitch('swLauncher', ['launcher', 'enabled'], applyFeatureVisibility);
+bindSwitch('swPomo', ['pomodoro', 'enabled'], applyFeatureVisibility);
+// 设置页快捷启动管理：添加 / 恢复默认 / 删除
+const launchAddBtn = document.getElementById('launchAddBtn');
+if (launchAddBtn) launchAddBtn.addEventListener('click', () => {
+  interact();
+  const inp = document.getElementById('launchAppInput');
+  addLaunchItem(inp ? inp.value : '', inp ? inp.value : '');
+});
+const launchAppInput = document.getElementById('launchAppInput');
+if (launchAppInput) launchAppInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    interact();
+    addLaunchItem(launchAppInput.value, launchAppInput.value);
+  }
+});
+const launchResetBtn = document.getElementById('launchResetBtn');
+if (launchResetBtn) launchResetBtn.addEventListener('click', () => { interact(); resetLaunchItems(); });
+const launchItemList = document.getElementById('launchItemList');
+if (launchItemList) launchItemList.addEventListener('click', (e) => {
+  const btn = e.target.closest('.sl-del');
+  if (!btn) return;
+  interact();
+  removeLaunchItem(btn.dataset.id);
+});
 bindSeg('segWxInterval', ['weather', 'interval']);
 bindSeg('segWxUnit', ['weather', 'unit']);
 // 「城市」不是一个直接的 settings 路径：auto = city:null，manual = 先等输入再落盘
@@ -2330,8 +2495,13 @@ async function refreshTrashBtn() {
   if (!btn) return;
   let t = null;
   try { t = await api.trashSize(); } catch {}
-  if (!t || !t.bytes) { btn.disabled = true; btn.textContent = '废纸篓已是空的'; }
-  else { btn.disabled = false; btn.textContent = `清空废纸篓 · ${fmtBytes(t.bytes)}`; }
+  const count = (t && t.count) || 0;
+  const bytes = (t && t.bytes) || 0;
+  if (count <= 0) { btn.disabled = true; btn.textContent = '废纸篓已是空的'; }
+  else {
+    btn.disabled = false;
+    btn.textContent = bytes > 0 ? `清空废纸篓 · ${fmtBytes(bytes)}` : `清空废纸篓 · ${count} 项`;
+  }
 }
 
 // 统一说明弹层：三项权限一次讲清，只弹一次（标志跨重启保存在 settings.consent）
@@ -2403,11 +2573,14 @@ if (qaTrash) qaTrash.addEventListener('click', async (e) => {
   e.stopPropagation();
   interact();
   const t = await api.trashSize();
-  if (!t || !t.bytes) { say('废纸篓已经是空的'); refreshTrashBtn(); return; }
+  const count = (t && t.count) || 0;
+  if (count <= 0) { say('废纸篓已经是空的'); refreshTrashBtn(); return; }
+  // fs 读不到但 Finder 探测到内容 → 提示授予「完全磁盘访问」以便显示体积（只提示一次，不深链）
+  if (t && t.tcc) say('已检测到废纸篓里有内容。授予「完全磁盘访问」后可显示体积', 4200);
   // 硬约束 2：清空废纸篓是本产品唯一不可逆操作，强制二次确认且先亮释放量
   const ok = await showConfirm({
-    title: `清空废纸篓？可释放 ${fmtBytes(t.bytes)}`,
-    body: `将永久删除废纸篓内约 ${t.count} 项，共 ${fmtBytes(t.bytes)}。\n这是不可恢复的操作。\n（Mio 只调用系统原生「清空废纸篓」，绝不使用 rm）`,
+    title: t.bytes > 0 ? `清空废纸篓？可释放 ${fmtBytes(t.bytes)}` : `清空废纸篓？共 ${count} 项`,
+    body: `将永久删除废纸篓内约 ${count} 项${t.bytes > 0 ? `，共 ${fmtBytes(t.bytes)}` : ''}。\n这是不可恢复的操作。\n（Mio 只调用系统原生「清空废纸篓」，绝不使用 rm）`,
     okText: '永久清空',
   });
   if (!ok) return;
@@ -2419,7 +2592,7 @@ if (qaTrash) qaTrash.addEventListener('click', async (e) => {
     return;
   }
   clearNotice();
-  say(r.failed ? `已清空 ${r.removed} 项，${r.failed} 项被占用跳过` : `已清空废纸篓，释放 ${fmtBytes(t.bytes)}`, 3500);
+  say(r.failed ? `已清空 ${r.removed} 项，${r.failed} 项被占用跳过` : (t.bytes > 0 ? `已清空废纸篓，释放 ${fmtBytes(t.bytes)}` : `已清空废纸篓，共 ${count} 项`), 3500);
   refreshTrashBtn();
 });
 
