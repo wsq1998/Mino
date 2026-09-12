@@ -82,4 +82,18 @@ contextBridge.exposeInMainWorld('mio', {
   dedupeStart: (payload) => ipcRenderer.invoke('dedupe-start', payload || {}),
   dedupeCancel: () => ipcRenderer.invoke('dedupe-cancel'),
   onDedupeProgress: (cb) => ipcRenderer.on('dedupe-progress', (_e, data) => cb(data)),
+  // ===== v1.8 新增 =====
+  // G 组 AI 助手（LLM 聊天）：Key 永不进 IPC 返回值，只拿脱敏串
+  llmGetConfig: () => ipcRenderer.invoke('llm-get-config'),
+  llmSaveKey: (key) => ipcRenderer.invoke('llm-save-key', { key }),
+  llmDeleteKey: () => ipcRenderer.invoke('llm-delete-key'),
+  llmTest: () => ipcRenderer.invoke('llm-test'),
+  llmChat: (text) => ipcRenderer.invoke('llm-chat', { text }),
+  // B4-2 首次启动引导
+  onboardingGet: () => ipcRenderer.invoke('onboarding-get'),
+  onboardingSet: (payload) => ipcRenderer.invoke('onboarding-set', payload || {}),
+  // B4-3 自动更新（启动静默检查；渲染层只订阅 update-notice 事件）
+  updateCheck: () => ipcRenderer.invoke('update-check'),
+  updateCheckStatus: () => ipcRenderer.invoke('update-check-status'),
+  onUpdateNotice: (cb) => ipcRenderer.on('update-notice', (_e, data) => cb(data)),
 });

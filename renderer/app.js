@@ -5,7 +5,7 @@
 const bridge = (window.mio && typeof window.mio.getStats === 'function') ? window.mio : null;
 // 浏览器预览模式的设置副本，让开关能真的拨动（含深合并，模拟主进程行为）
 const previewSettings = {
-  _v: 4,
+  _v: 6,
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
   chime: { enabled: true, from: 9, to: 22, notify: false },
@@ -19,9 +19,11 @@ const previewSettings = {
   consent: { permsIntroSeen: false },
   weather: { enabled: true, city: null, interval: 60, unit: 'c' },
   autoClean: { enabled: false, pausedUntil: null, lastRun: null },
+  ai: { enabled: false, provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', monthlyCap: 0, maxTokens: 512, persona: '你是 Mio，一个住在用户 macOS 桌面上的小机器人伙伴。' },
+  onboarding: { done: false },
   isPackaged: false, loginItem: false,
   stealthApps: [{ id: 'com.colliderli.iina', name: 'IINA' }, { id: 'org.videolan.vlc', name: 'VLC' }],
-  version: '1.7.5', userDataPath: '~/Library/Application Support/Mio',
+  version: '1.8.0', userDataPath: '~/Library/Application Support/Mio',
 };
 function previewMerge(base, patch) {
   const out = { ...base };
@@ -150,6 +152,26 @@ const api = bridge || {
   dedupeStart: async () => ({ ok: true, canceled: false, truncated: false, scanned: 0, groups: [] }),
   dedupeCancel: async () => ({ ok: false, error: '当前没有进行中的查重' }),
   onDedupeProgress: () => {},
+  // ===== v1.8 降级 mock =====
+  llmGetConfig: async () => ({
+    ok: true,
+    ai: { enabled: false, provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', monthlyCap: 0, maxTokens: 512, persona: '你是 Mio，一个住在用户 macOS 桌面上的小机器人伙伴。' },
+    presets: [
+      { id: 'deepseek', label: 'DeepSeek' }, { id: 'zhipu', label: '智谱' },
+      { id: 'qwen', label: '通义' }, { id: 'openai', label: 'OpenAI' }, { id: 'custom', label: '自定义' },
+    ],
+    pricing: { deepseek: { in: 0.001, out: 0.002 }, zhipu: { in: 0.001, out: 0.002 }, qwen: { in: 0.001, out: 0.002 }, openai: { in: 0.005, out: 0.015 }, custom: { in: 0, out: 0 } },
+    keyMasked: '', spent: 0,
+  }),
+  llmSaveKey: async (key) => ({ ok: true, keyMasked: (key || '').slice(0, 2) + '••••••' + (key || '').slice(-4) }),
+  llmDeleteKey: async () => ({ ok: true, keyMasked: '' }),
+  llmTest: async () => ({ ok: true }),
+  llmChat: async (text) => ({ ok: true, reply: `（预览模式）收到：「${text}」`, estTokens: 12, estCost: 0.001, spent: 0.001, cap: null }),
+  onboardingGet: async () => ({ ok: true, done: false, city: null, aiEnabled: false }),
+  onboardingSet: async (p) => { if (p && p.done) previewSettings.onboarding = { done: true }; return { ok: true, done: !!p && !!p.done }; },
+  updateCheck: async () => ({ ok: true, hasNew: false, current: '1.8.0', latest: '1.8.0', url: '' }),
+  updateCheckStatus: async () => ({ ok: true, lastCheckAt: null, lastNoticeKey: null }),
+  onUpdateNotice: () => {},
 };
 
 const mioEl = document.getElementById('mio');
@@ -167,7 +189,7 @@ function escHtml(s) {
 // 声明放在前面：tickClock 会在启动阶段立即调用 chimeTick，不能等到文件末尾才初始化
 const pad2 = (n) => String(n).padStart(2, '0');
 // 只有这些键属于「设置」，其余是 meta（isPackaged / version …），不能混进 settings
-const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather', 'autoClean'];
+const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather', 'autoClean', 'ai', 'onboarding'];
 let settings = {
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
@@ -182,6 +204,8 @@ let settings = {
   consent: { permsIntroSeen: false },
   weather: { enabled: true, city: null, interval: 60, unit: 'c' },
   autoClean: { enabled: false, pausedUntil: null, lastRun: null },
+  ai: { enabled: false, provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', monthlyCap: 0, maxTokens: 512, persona: '你是 Mio，一个住在用户 macOS 桌面上的小机器人伙伴。' },
+  onboarding: { done: false },
 };
 let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '', displays: [], permissions: null, hotkeyRegistered: true };
 let gazeEnabled = true; // 视线跟随开关，由 appearance.gaze 决定
@@ -194,6 +218,111 @@ function pickSettings(s) {
   const out = {};
   SETTING_KEYS.forEach((k) => { if (s && s[k]) out[k] = s[k]; });
   return out;
+}
+
+// ============ v1.8：B4-1 AI 助手（LLM 聊天）状态 ============
+let llmState = {
+  cfg: null,           // llm-get-config 返回的 G 组配置
+  loading: false,      // 对话请求进行中（防连点）
+  keyDraft: '',        // 输入框草稿（不落盘）
+};
+// 服务商预设（与主进程 LLM_PRESETS 保持一致；渲染层只用于显示选项与默认值）
+const LLM_PRESETS_MAP = {
+  deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  zhipu:    { label: '智谱',     baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+  qwen:     { label: '通义',     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+  openai:   { label: 'OpenAI',   baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  custom:   { label: '自定义',   baseUrl: '', model: '' },
+};
+const LLM_PRICING_LABEL = { deepseek: 'DeepSeek', zhipu: '智谱', qwen: '通义', openai: 'OpenAI', custom: '自定义' };
+// 拉取 G 组配置（含脱敏 Key / 月度花费），并回填设置页
+async function refreshLlmConfig() {
+  try {
+    const r = await api.llmGetConfig();
+    if (r && r.ok) {
+      llmState.cfg = r;
+      if (r.ai) settings.ai = { ...(settings.ai || {}), ...r.ai };
+      renderLlmConfig();
+    }
+  } catch {}
+}
+// 渲染 G 组设置页（Key 状态 / 花费 / 测试结果）
+function renderLlmConfig() {
+  const el = (id) => document.getElementById(id);
+  const cfg = llmState.cfg;
+  const ai = settings.ai || {};
+  if (el('aiKeyStatus')) {
+    const masked = (cfg && cfg.keyMasked) || '';
+    el('aiKeyStatus').textContent = masked ? `已保存 ${masked}` : '未保存';
+  }
+  if (el('aiSpent')) el('aiSpent').textContent = cfg ? `本月已用约 ¥${Number(cfg.spent || 0).toFixed(4)}` : '—';
+  if (el('aiTestResult')) el('aiTestResult').textContent = '';
+  const seg = el('segAiProvider');
+  if (seg) [...seg.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === ai.provider));
+  if (el('aiBaseUrl')) el('aiBaseUrl').value = ai.baseUrl || '';
+  if (el('aiModel')) el('aiModel').value = ai.model || '';
+}
+// 应用服务商预设：切换 provider 时自动填 Base URL / 模型名（自定义留空）
+function applyAiPreset(provider) {
+  const p = LLM_PRESETS_MAP[provider] || LLM_PRESETS_MAP.custom;
+  const el = (id) => document.getElementById(id);
+  if (el('aiBaseUrl')) el('aiBaseUrl').value = p.baseUrl;
+  if (el('aiModel')) el('aiModel').value = p.model;
+  if (el('segAiProvider')) [...el('segAiProvider').querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === provider));
+}
+// 设置页里保存 G 组（enabled / provider / baseUrl / model / cap / maxTokens / persona）
+async function saveAiSettings() {
+  const el = (id) => document.getElementById(id);
+  const provider = (el('segAiProvider') ? [...el('segAiProvider').querySelectorAll('button')].find((b) => b.classList.contains('on')) : null);
+  const pid = provider ? provider.dataset.v : (settings.ai.provider || 'deepseek');
+  const tokensBtn = (el('segAiMaxTokens') ? [...el('segAiMaxTokens').querySelectorAll('button')].find((b) => b.classList.contains('on')) : null);
+  const tokens = tokensBtn ? Number(tokensBtn.dataset.v) : (settings.ai.maxTokens || 512);
+  const patch = {
+    ai: {
+      enabled: !!(el('swAi') && el('swAi').checked),
+      provider: pid,
+      baseUrl: (el('aiBaseUrl') ? el('aiBaseUrl').value : '').trim(),
+      model: (el('aiModel') ? el('aiModel').value : '').trim(),
+      monthlyCap: Math.max(0, Number(el('aiCap') ? el('aiCap').value : 0) || 0),
+      maxTokens: Math.min(2048, Math.max(64, tokens)),
+      persona: (el('aiPersona') ? el('aiPersona').value : '').trim(),
+    },
+  };
+  await patchSettings(patch);
+  await refreshLlmConfig();
+  say('AI 助手设置已保存', 1600);
+}
+// 保存 API Key → 钥匙串（主进程负责写，渲染层只拿脱敏串）
+async function saveAiKey() {
+  const el = (id) => document.getElementById(id);
+  const key = (el('aiKeyInput') ? el('aiKeyInput').value : '').trim();
+  if (!key) { say('先粘贴 API Key', 1600); return; }
+  const r = await api.llmSaveKey(key);
+  if (r && r.ok) {
+    if (el('aiKeyInput')) el('aiKeyInput').value = '';
+    await refreshLlmConfig();
+    say('Key 已保存到钥匙串', 1600);
+  } else {
+    say((r && r.error) || '保存失败', 2000);
+  }
+}
+async function deleteAiKey() {
+  await api.llmDeleteKey();
+  await refreshLlmConfig();
+  say('已删除 Key', 1600);
+}
+// 连通性测试：主进程发起最小请求，这里只显示结果
+async function testAi() {
+  const btn = document.getElementById('aiTestBtn');
+  const res = document.getElementById('aiTestResult');
+  if (btn) btn.disabled = true;
+  if (res) { res.textContent = '测试中…'; res.className = 'sub'; }
+  const r = await api.llmTest();
+  if (res) {
+    if (r && r.ok) { res.textContent = '✅ 连接正常'; res.className = 'sub ok-text'; }
+    else { res.textContent = `❌ ${(r && r.error) || '测试失败'}`; res.className = 'sub warn-text'; }
+  }
+  if (btn) setTimeout(() => { btn.disabled = false; }, 1500);
 }
 
 // 报时时段（闭区间，支持跨零点）
@@ -298,6 +427,19 @@ function renderSettings() {
   if (segWxU) [...segWxU.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === (wx.unit || 'c')));
   if (el('dataPath')) el('dataPath').textContent = settingsMeta.userDataPath || '—';
 
+  // v1.8 G 组：AI 助手（LLM 聊天）
+  const ai = settings.ai || {};
+  set('swAi', ai.enabled);
+  const segAiP = el('segAiProvider');
+  if (segAiP) [...segAiP.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === ai.provider));
+  if (el('aiBaseUrl')) el('aiBaseUrl').value = ai.baseUrl || '';
+  if (el('aiModel')) el('aiModel').value = ai.model || '';
+  if (el('aiCap')) el('aiCap').value = String(ai.monthlyCap || 0);
+  const segAiT = el('segAiMaxTokens');
+  if (segAiT) [...segAiT.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === String(ai.maxTokens || 512)));
+  if (el('aiPersona')) el('aiPersona').value = ai.persona || '';
+  renderLlmConfig();
+
   // 折叠标题上的摘要：收起时也能一眼看到状态
   const h = settings.health;
   const n = [h.sit, h.water, h.eye].filter(Boolean).length;
@@ -312,6 +454,7 @@ function renderSettings() {
     perm: permBrief(),
     data: settingsMeta.userDataPath ? '全部在本机' : '—',
     about: settingsMeta.version ? `v${settingsMeta.version}` : '—',
+    ai: ai.enabled ? `${LLM_PRESETS_MAP[ai.provider] ? LLM_PRESETS_MAP[ai.provider].label : '自定义'} · ${ai.model || '未填模型'}` : '关',
   };
   Object.keys(briefs).forEach((k) => {
     const node = el(`sgBrief-${k}`);
@@ -1870,7 +2013,7 @@ function filterSettings() {
   const more = document.getElementById('setMore');
   if (more) more.textContent = q && !hits
     ? `没有匹配「${box.value.trim()}」的设置项`
-    : (q ? `匹配 ${hits} 项` : '外观与主题 · 剪贴板 · 天气 · AI 助手 · 权限，将随后续版本陆续加入');
+    : (q ? `匹配 ${hits} 项` : '外观 · 剪贴板 · 天气 · AI 助手 · 权限，均已就绪');
 }
 const setSearch = document.getElementById('setSearch');
 if (setSearch) setSearch.addEventListener('input', filterSettings);
@@ -2466,6 +2609,271 @@ if (dedupeTrashBtn) dedupeTrashBtn.addEventListener('click', async (e) => {
 });
 
 loadSettings();
+
+// ==================================================================
+// v1.8 B4-1：AI 对话面板（常用页卡片）
+// ==================================================================
+let chatHistory = []; // 仅内存：本轮会话的展示记录（不落盘、不上传）
+function renderChatCard() {
+  const card = document.getElementById('chatCard');
+  if (!card) return;
+  const ai = settings.ai || {};
+  card.hidden = !ai.enabled;
+  if (!ai.enabled) return;
+  const model = document.getElementById('chatModel');
+  if (model) model.textContent = ai.model ? `· ${ai.model}` : '';
+  const log = document.getElementById('chatLog');
+  if (log) {
+    log.innerHTML = chatHistory.length
+      ? chatHistory.map((m) => `<div class="chat-msg ${m.role === 'user' ? 'chat-user' : 'chat-bot'}">${escHtml(m.text)}</div>`).join('')
+      : '<div class="chat-empty">嗨，我是 Mio，有什么想问的？</div>';
+    log.scrollTop = log.scrollHeight;
+  }
+  const foot = document.getElementById('chatFoot');
+  if (foot) foot.textContent = llmState.cfg
+    ? `单轮对话 · 本月已用约 ¥${Number(llmState.cfg.spent || 0).toFixed(4)}`
+    : '单轮对话 · 不携带历史';
+}
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const text = input ? input.value.trim() : '';
+  if (!text || llmState.loading) return;
+  llmState.loading = true;
+  const btn = document.getElementById('chatSendBtn');
+  if (btn) btn.disabled = true;
+  chatHistory.push({ role: 'user', text });
+  renderChatCard();
+  if (input) input.value = '';
+  const r = await api.llmChat(text);
+  llmState.loading = false;
+  if (btn) btn.disabled = false;
+  if (r && r.ok) {
+    chatHistory.push({ role: 'bot', text: r.reply });
+    say('Mio 回答了你', 1400);
+  } else {
+    const kind = (r && r.kind) || 'error';
+    const msgMap = {
+      disabled: 'AI 对话还没启用，去设置里打开',
+      nokey: '还没保存 API Key',
+      unconfigured: 'Base URL 或模型还没填',
+      empty: '输入为空',
+      cap: '本月额度已用完',
+      unauthorized: 'API Key 无效或未授权',
+      timeout: '请求超时，稍后再试',
+      network: '网络连不上，检查网络或 Base URL',
+      quota: '服务商限流或额度不足',
+      notfound: '接口地址不对（404）',
+      error: '请求失败',
+    };
+    chatHistory.push({ role: 'bot', text: `⚠️ ${msgMap[kind] || '请求失败'}（${(r && r.error) || ''}）` });
+    say(msgMap[kind] || '请求失败', 2400);
+  }
+  renderChatCard();
+  await refreshLlmConfig();
+}
+const chatSendBtn = document.getElementById('chatSendBtn');
+if (chatSendBtn) chatSendBtn.addEventListener('click', () => { interact(); sendChat(); });
+const chatInput = document.getElementById('chatInput');
+if (chatInput) chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { interact(); sendChat(); } });
+
+// ==================================================================
+// v1.8 B4-2：首次启动引导（三步全屏，老用户不弹）
+// ==================================================================
+let onboardingStep = 0;
+let onboardingActive = false;
+const OB_STEPS = [
+  {
+    title: '欢迎使用 Mio',
+    body: 'Mio 是一个住在你 macOS 桌面上的小机器人伙伴。\n\n先告诉我你所在的城市，我就能给你看天气。',
+    render: (box) => {
+      box.innerHTML = `<div class="ob-city-row">
+        <input type="text" id="obCity" class="stext" placeholder="如：上海 / Beijing" maxlength="40" value="${escHtml(settings.weather.city || '')}">
+        <button class="btn" id="obCityAuto">自动定位</button>
+      </div>
+      <div class="set-note">不填也可以，我会用 IP 自动定位到城市级</div>`;
+      const auto = document.getElementById('obCityAuto');
+      if (auto) auto.addEventListener('click', () => { const inp = document.getElementById('obCity'); if (inp) inp.value = ''; say('好的，自动定位', 1200); });
+    },
+    save: async () => {
+      const inp = document.getElementById('obCity');
+      const city = inp ? inp.value.trim() : '';
+      await api.onboardingSet({ city: city || null });
+    },
+  },
+  {
+    title: '启用 AI 对话（可选）',
+    body: 'Mio 可以接入大模型服务商，陪你聊天、回答问题。\n\nAPI Key 只保存在 macOS 钥匙串里，绝不写入磁盘；对话内容只发往你配置的服务商。',
+    render: (box) => {
+      box.innerHTML = `<div class="ob-ai-row">
+        <label class="switch"><input type="checkbox" id="obAi"><i></i></label>
+        <span>启用 AI 对话</span>
+      </div>
+      <div class="set-note">随时可在「设置 → AI 助手」里改</div>`;
+      const sw = document.getElementById('obAi');
+      if (sw) sw.checked = !!(settings.ai && settings.ai.enabled);
+    },
+    save: async () => {
+      const sw = document.getElementById('obAi');
+      await api.onboardingSet({ aiEnabled: !!(sw && sw.checked) });
+    },
+  },
+  {
+    title: '权限说明',
+    body: 'Mio 会用到几项系统权限：\n\n· 截图 —— 需要「屏幕录制」，只在你点截图时读一次屏幕\n· 锁屏 —— 需要「辅助功能」，只在你点锁屏时模拟一次快捷键\n· 清空废纸篓 —— 需要「自动化」，只在你确认时执行\n\n不授权也能正常用，只是对应功能不可用或降级。你的数据全部只在本机处理。',
+    render: (box) => { box.innerHTML = ''; },
+    save: async () => {},
+  },
+];
+async function apiSet(patch) {
+  try { const r = await api.onboardingSet(patch); return r; } catch { return null; }
+}
+function renderOnboarding() {
+  const ov = document.getElementById('onboardingOverlay');
+  if (!ov) return;
+  const step = OB_STEPS[onboardingStep];
+  if (!step) { ov.hidden = true; return; }
+  ov.hidden = false;
+  const title = document.getElementById('obTitle');
+  const body = document.getElementById('obBody');
+  const controls = document.getElementById('obControls');
+  const stepEl = document.getElementById('obStep');
+  if (title) title.textContent = step.title;
+  if (body) body.textContent = step.body;
+  if (controls) { controls.innerHTML = ''; step.render(controls); }
+  if (stepEl) stepEl.textContent = `${onboardingStep + 1} / ${OB_STEPS.length}`;
+  const prev = document.getElementById('obPrev');
+  const next = document.getElementById('obNext');
+  const done = document.getElementById('obDone');
+  if (prev) prev.hidden = onboardingStep === 0;
+  if (next) next.hidden = onboardingStep === OB_STEPS.length - 1;
+  if (done) done.hidden = onboardingStep !== OB_STEPS.length - 1;
+}
+async function onboardingNext() {
+  const step = OB_STEPS[onboardingStep];
+  if (step && step.save) await step.save();
+  if (onboardingStep < OB_STEPS.length - 1) {
+    onboardingStep++;
+    renderOnboardingStep();
+  } else {
+    await apiSet({ done: true });
+    const ov = document.getElementById('onboardingOverlay');
+    if (ov) ov.hidden = true;
+    onboardingActive = false;
+    say('欢迎使用 Mio！', 1800);
+  }
+}
+async function maybeShowOnboarding() {
+  try {
+    const r = await api.onboardingGet();
+    if (r && r.ok && !r.done) {
+      onboardingActive = true;
+      onboardingStep = 0;
+      renderOnboardingStep();
+    }
+  } catch {}
+}
+// 渲染引导步骤（renderOnboarding 的别名，语义一致：标题/正文/控件/按钮显隐）
+function renderOnboardingStep() {
+  renderOnboarding();
+}
+const obPrev = document.getElementById('obPrev');
+if (obPrev) obPrev.addEventListener('click', () => { if (onboardingStep > 0) { onboardingStep--; renderOnboardingStep(); } });
+const obNext = document.getElementById('obNext');
+if (obNext) obNext.addEventListener('click', () => { interact(); onboardingNext(); });
+const obDone = document.getElementById('obDone');
+if (obDone) obDone.addEventListener('click', () => { interact(); onboardingNext(); });
+
+// ==================================================================
+// v1.8 B4-3：自动更新（非阻塞提示条，不自动下载）
+// ==================================================================
+let updateNoticeData = null;
+function renderUpdateNotice() {
+  const box = document.getElementById('updateNotice');
+  const text = document.getElementById('updateText');
+  if (!box || !updateNoticeData) { if (box) box.hidden = true; return; }
+  box.hidden = false;
+  if (text) text.textContent = `发现新版本 ${updateNoticeData.version}（当前 v${settingsMeta.version || '—'}）`;
+}
+const updateGoBtn = document.getElementById('updateGoBtn');
+if (updateGoBtn) updateGoBtn.addEventListener('click', () => {
+  if (updateNoticeData && updateNoticeData.url) { window.open(updateNoticeData.url, '_blank'); }
+  interact();
+});
+const updateDismissBtn = document.getElementById('updateDismissBtn');
+if (updateDismissBtn) updateDismissBtn.addEventListener('click', () => {
+  updateNoticeData = null;
+  const box = document.getElementById('updateNotice');
+  if (box) box.hidden = true;
+  interact();
+});
+const updateCheckBtn = document.getElementById('updateCheckBtn');
+if (updateCheckBtn) updateCheckBtn.addEventListener('click', async () => {
+  interact();
+  const res = document.getElementById('updateCheckResult');
+  if (res) res.textContent = '检查中…';
+  const r = await api.updateCheck();
+  if (res) {
+    if (r && r.ok) {
+      res.textContent = r.hasNew ? `有新版 ${r.latest}` : `已是最新版 ${r.current}`;
+    } else {
+      res.textContent = (r && r.error) || '检查失败（稍后再试）';
+    }
+  }
+});
+// 主进程启动时发现新版本 → 推一次 update-notice 事件
+if (typeof api.onUpdateNotice === 'function') {
+  api.onUpdateNotice((data) => {
+    if (data && data.hasNew) {
+      updateNoticeData = { version: data.version, url: data.url };
+      renderUpdateNotice();
+      say('发现新版本', 2000);
+    }
+  });
+}
+
+// ==================================================================
+// v1.8 初始化：AI 配置 / 对话卡片 / 引导 / 更新状态
+// ==================================================================
+// G 组设置页交互绑定（provider 预设 / Key / 测试 / 保存 / maxTokens）
+(function bindAiSettings() {
+  const seg = document.getElementById('segAiProvider');
+  if (seg) seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    interact();
+    applyAiPreset(b.dataset.v);
+  });
+  const saveBtn = document.getElementById('aiSaveBtn');
+  if (saveBtn) saveBtn.addEventListener('click', () => { interact(); saveAiSettings(); });
+  const keySave = document.getElementById('aiKeySaveBtn');
+  if (keySave) keySave.addEventListener('click', () => { interact(); saveAiKey(); });
+  const keyDel = document.getElementById('aiKeyDelBtn');
+  if (keyDel) keyDel.addEventListener('click', () => { interact(); deleteAiKey(); });
+  const testBtn = document.getElementById('aiTestBtn');
+  if (testBtn) testBtn.addEventListener('click', () => { interact(); testAi(); });
+  const segMax = document.getElementById('segAiMaxTokens');
+  if (segMax) segMax.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    interact();
+    [...segMax.querySelectorAll('button')].forEach((x) => x.classList.toggle('on', x === b));
+  });
+  const swAi = document.getElementById('swAi');
+  if (swAi) swAi.addEventListener('change', () => { interact(); saveAiSettings(); });
+})();
+
+async function initV18() {
+  await refreshLlmConfig();
+  renderChatCard();
+  await maybeShowOnboarding();
+  try {
+    const st = await api.updateCheckStatus();
+    if (st && st.ok && st.lastNoticeKey) {
+      // 已有过通知记录，不重复弹
+    }
+  } catch {}
+}
+initV18();
 
 // 启动问候
 setTimeout(() => say('嗨，我是 Mio'), 800);

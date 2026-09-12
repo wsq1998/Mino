@@ -10,3 +10,6 @@ docs/shots/desktop-live.png
 
 # 系统
 .DS_Store
+
+# 内部工作记忆（不随代码入库）
+.workbuddy/

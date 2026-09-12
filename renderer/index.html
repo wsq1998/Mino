@@ -89,6 +89,16 @@
         <div id="qaNotice" class="qa-notice" hidden></div>
       </div>
       <button class="btn wide" id="homeToSettings">打开设置</button>
+      <!-- v1.8 G 组：AI 对话入口（在设置里启用后才显示） -->
+      <div class="card" id="chatCard" hidden>
+        <div class="label">问 Mio <span class="sub-inline" id="chatModel"></span></div>
+        <div id="chatLog" class="chat-log"></div>
+        <div class="chat-input-row">
+          <input type="text" id="chatInput" class="stext" placeholder="问点什么…" maxlength="500" autocomplete="off">
+          <button class="btn" id="chatSendBtn">发送</button>
+        </div>
+        <div class="set-note" id="chatFoot">单轮对话 · 不携带历史</div>
+      </div>
     </div>
 
     <!-- 状态 -->
@@ -370,6 +380,41 @@
         </div>
       </details>
 
+      <!-- v1.8 G 组：AI 助手（LLM 聊天） -->
+      <details class="sgroup" data-group="ai">
+        <summary class="sgroup-h"><span class="sg-name">AI 助手</span><span class="sg-brief" id="sgBrief-ai"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>启用 AI 对话</span><label class="switch"><input type="checkbox" id="swAi"><i></i></label></div>
+          <div class="set-note">开启后在「常用」页出现对话入口；Key 只存 macOS 钥匙串，绝不写入磁盘</div>
+          <div class="set-row"><span>服务商</span>
+            <div class="seg" id="segAiProvider">
+              <button data-v="deepseek">DeepSeek</button><button data-v="zhipu">智谱</button><button data-v="qwen">通义</button><button data-v="openai">OpenAI</button><button data-v="custom">自定义</button>
+            </div>
+          </div>
+          <div class="set-row"><span>Base URL</span><input type="text" id="aiBaseUrl" class="stext" placeholder="https://api.deepseek.com/v1" maxlength="200"></div>
+          <div class="set-row"><span>模型</span><input type="text" id="aiModel" class="stext" placeholder="deepseek-chat" maxlength="80"></div>
+          <div class="set-row"><span>API Key</span><span class="set-val ellip" id="aiKeyStatus">未保存</span></div>
+          <div class="set-row"><input type="password" id="aiKeyInput" class="stext" placeholder="粘贴 API Key（仅存钥匙串）" maxlength="200"></div>
+          <div class="stealth-actions">
+            <button class="btn tiny" id="aiKeySaveBtn">保存 Key</button>
+            <button class="btn tiny danger" id="aiKeyDelBtn">删除</button>
+            <button class="btn tiny" id="aiTestBtn">测试连接</button>
+          </div>
+          <div id="aiTestResult" class="sub"></div>
+          <div class="set-row"><span>单次最大回复</span>
+            <div class="seg" id="segAiMaxTokens">
+              <button data-v="128">128</button><button data-v="256">256</button><button data-v="512">512</button><button data-v="1024">1024</button>
+            </div>
+          </div>
+          <div class="set-row"><span>每月花费上限（元）</span><input type="number" id="aiCap" class="stext" min="0" step="1" placeholder="0 = 不限制" maxlength="8"></div>
+          <div class="set-note" id="aiSpent">本月已用约 ¥0</div>
+          <div class="set-row"><span>人设</span></div>
+          <textarea id="aiPersona" class="stext ta" rows="4" maxlength="600" placeholder="Mio 的人设与说话风格"></textarea>
+          <div class="stealth-actions"><button class="btn wide" id="aiSaveBtn">保存 AI 设置</button></div>
+          <div class="set-note">对话内容只发往你配置的服务商；Mio 不做定时/后台调用，只有你点「发送」才发请求。单轮对话不携带历史。</div>
+        </div>
+      </details>
+
       <!-- v1.7 I 组：权限中心（检测 + 深链，探测零权限） -->
       <details class="sgroup" data-group="perm">
         <summary class="sgroup-h"><span class="sg-name">权限</span><span class="sg-brief" id="sgBrief-perm"></span></summary>
@@ -433,10 +478,20 @@
           <div class="set-row"><span>数据存放</span><span class="set-val" id="aboutPath">—</span></div>
           <div class="set-row"><span>联网</span><span class="set-val">仅天气与 AI（需手动开启）</span></div>
           <div class="set-note">CPU / 内存 / 磁盘 / 电池等数据全部只在本机处理，从不上传。</div>
+          <!-- v1.8 B4-3：自动更新（非阻塞提示条，不自动下载） -->
+          <div id="updateNotice" class="update-notice" hidden>
+            <div class="update-text" id="updateText">发现新版本</div>
+            <div class="update-actions">
+              <button class="btn tiny" id="updateGoBtn">去下载</button>
+              <button class="btn tiny" id="updateDismissBtn">忽略</button>
+            </div>
+          </div>
+          <div class="set-row"><span>检查更新</span><button class="btn tiny" id="updateCheckBtn">检查</button></div>
+          <div id="updateCheckResult" class="sub"></div>
         </div>
       </details>
 
-      <div class="set-more" id="setMore">AI 助手 · 首次引导，将随后续版本陆续加入</div>
+      <div class="set-more" id="setMore">外观 · 剪贴板 · 天气 · AI 助手 · 权限，均已就绪</div>
     </div>
     </div>
 
@@ -484,6 +539,21 @@
       <div class="confirm-btns">
         <button class="btn" id="introLater">稍后</button>
         <button class="btn" id="introGo">继续</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- v1.8 B4-2：首次启动引导（三步全屏，老用户不弹） -->
+  <div id="onboardingOverlay" class="confirm-overlay interactive" hidden>
+    <div class="confirm-box onboarding-box">
+      <div class="confirm-title" id="obTitle">欢迎使用 Mio</div>
+      <div class="confirm-body" id="obBody"></div>
+      <div class="ob-step" id="obStep"></div>
+      <div class="ob-controls" id="obControls"></div>
+      <div class="confirm-btns" id="obBtns">
+        <button class="btn" id="obPrev" hidden>上一步</button>
+        <button class="btn" id="obNext">下一步</button>
+        <button class="btn" id="obDone" hidden>开始使用</button>
       </div>
     </div>
   </div>

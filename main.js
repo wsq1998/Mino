@@ -1,5 +1,5 @@
 // Mio - macOS 桌面陪伴机器人 · 主进程
-const { app, BrowserWindow, ipcMain, Menu, Notification, globalShortcut, screen, shell, clipboard, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, Notification, globalShortcut, screen, shell, clipboard, systemPreferences, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -32,10 +32,11 @@ function saveState(patch) {
 // 默认值是「骨架」，用户配置叠上去，缺失字段自动补齐 —— v1.4 只有 chime/health/stealth
 // 三组，读进来就会自动长出 general/appearance 等新组，老配置文件零改动可用。
 // v1.6 再叠一层：clipboard/capture/hotkey/pomodoro/consent 五个新区，老键名一个不动。
-const SETTINGS_VERSION = 5;
+// v1.8 再叠一层：ai（LLM 聊天）+ onboarding 标记，老键名一个不动。
+const SETTINGS_VERSION = 6;
 
 const DEFAULT_SETTINGS = {
-  _v: 5,
+  _v: 6,
   general: { autoOpen: false },
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
@@ -73,6 +74,20 @@ const DEFAULT_SETTINGS = {
     pausedUntil: null, // 毫秒时间戳：暂停到该时刻（「暂停 7 天」温和档位；手动扫描不受影响）
     lastRun: null,     // { t, freed, moved, items } —— 面板回溯「上次自动清理：时间/释放/清了什么」
   },
+  // v1.8 G 组：AI 助手（LLM 聊天）。Key 永不落盘 —— 只存 macOS 钥匙串（service=mio-llm）。
+  ai: {
+    enabled: false,          // LLM-1：关 → 球体不出现对话入口、任何 IPC 不发请求
+    provider: 'deepseek',    // LLM-2：deepseek | zhipu | qwen | openai | custom
+    baseUrl: 'https://api.deepseek.com/v1', // LLM-4：随预设自动填，可改
+    model: 'deepseek-chat',  // LLM-4：随预设自动填，可改
+    monthlyCap: 0,           // LLM-7：每月花费上限（元，估算护栏；0 = 不限制）
+    maxTokens: 512,          // LLM-6：单次最大回复长度（64–2048，默认 512）
+    persona: `你是 Mio，一个住在用户 macOS 桌面上的小机器人伙伴。
+你说话简短、亲切、偶尔俏皮；你了解用户电脑的实时状态（CPU、内存、磁盘、天气）。
+你不知道的问题就老实说不知道，不编造。回答控制在 3-5 句以内。`, // LLM-8 默认人设
+  },
+  // v1.8 B4-2：首次启动引导标记。done=true 表示已引导过（老用户不弹）
+  onboarding: { done: false },
 };
 
 // 深合并：base 作骨架，patch 覆盖其上；数组整体替换（不逐项合并）
@@ -110,6 +125,19 @@ function sanitizeSettings(s) {
     s.autoClean.pausedUntil = Number.isFinite(pu) && pu > Date.now() ? pu : null;
     if (!s.autoClean.lastRun || typeof s.autoClean.lastRun !== 'object') s.autoClean.lastRun = null;
   }
+  // v1.8 ai：脏数据收口 —— maxTokens 夹到 64–2048，monthlyCap 非负数字，persona 清空回退默认
+  if (s.ai && typeof s.ai === 'object') {
+    s.ai.enabled = !!s.ai.enabled;
+    const mt = Number(s.ai.maxTokens);
+    s.ai.maxTokens = Number.isFinite(mt) ? clamp(Math.round(mt), 64, 2048) : 512;
+    const cap = Number(s.ai.monthlyCap);
+    s.ai.monthlyCap = Number.isFinite(cap) && cap > 0 ? Math.round(cap) : 0;
+    s.ai.provider = ['deepseek', 'zhipu', 'qwen', 'openai', 'custom'].includes(s.ai.provider)
+      ? s.ai.provider : 'deepseek';
+    if (typeof s.ai.baseUrl !== 'string' || !s.ai.baseUrl.trim()) s.ai.baseUrl = DEFAULT_SETTINGS.ai.baseUrl;
+    if (typeof s.ai.model !== 'string' || !s.ai.model.trim()) s.ai.model = DEFAULT_SETTINGS.ai.model;
+    if (typeof s.ai.persona !== 'string' || !s.ai.persona.trim()) s.ai.persona = DEFAULT_SETTINGS.ai.persona;
+  }
   return s;
 }
 
@@ -132,6 +160,61 @@ function patchSettings(patch) {
   const next = sanitizeSettings(deepMerge(getSettings(), patch || {}));
   saveState({ settings: next });
   return next;
+}
+
+// ============ v1.8 G 组：LLM 服务商预设 / 单价表 / 钥匙串 ============
+// 预设值硬编码于主进程（PRD §5.3 / §6.3）：渲染层只拿「选项名 + 选中值」，不落盘明文 Key。
+// 全部 OpenAI 兼容 /v1/chat/completions；Ollama 用户直接在「自定义」填 http://localhost:11434。
+const LLM_PRESETS = {
+  deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  zhipu:   { label: '智谱',     baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+  qwen:    { label: '通义',     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+  openai:  { label: 'OpenAI',   baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  custom:  { label: '自定义',   baseUrl: '', model: '' },
+};
+// 单价表（元 / 千 token，估算口径）：仅三家预设 + OpenAI 有价；自定义按 0 估算（LLM-7 / Q4）
+const LLM_PRICING = {
+  deepseek: { in: 0.001, out: 0.002 },
+  zhipu:    { in: 0.001, out: 0.002 },
+  qwen:     { in: 0.001, out: 0.002 },
+  openai:   { in: 0.005, out: 0.015 },
+  custom:   { in: 0, out: 0 },
+};
+// 钥匙串条目：service=mio-llm，account=当前 macOS 用户名 —— 真 key 永不进 IPC 返回值
+const KEYCHAIN_SERVICE = 'mio-llm';
+const keychainAccount = () => os.userInfo().username || process.env.USER || 'mio';
+
+// security CLI 封装（macOS 原生，零第三方依赖）
+function keychainGet() {
+  try {
+    // 丢弃 stderr：无条目时 security 会向 stderr 打印 SecKeychainSearchCopyNext 噪音
+    const out = execFileSync('/usr/bin/security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', keychainAccount(), '-w'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const v = String(out || '').trim();
+    return v ? v : null;
+  } catch { return null; }
+}
+function keychainSave(key) {
+  if (!key) return { ok: false, error: 'Key 为空' };
+  try {
+    // -U：存在则覆盖，避免先删后写造成窗口期
+    execFileSync('/usr/bin/security', ['add-generic-password', '-a', keychainAccount(), '-s', KEYCHAIN_SERVICE, '-w', key, '-U'], { timeout: 5000 });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err).slice(0, 120) };
+  }
+}
+function keychainDelete() {
+  try {
+    execFileSync('/usr/bin/security', ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', keychainAccount()], { timeout: 5000 });
+  } catch {}
+  return { ok: true };
+}
+// 脱敏串：sk- + 前 2 + 后 4；非 sk- 前缀也按同规则（首 2 + 末 4），保证渲染层永远拿不到完整 Key
+function maskKey(key) {
+  if (!key) return '';
+  const s = String(key);
+  if (s.length <= 8) return '••••••';
+  return `${s.slice(0, 2)}••••••${s.slice(-4)}`;
 }
 
 // ============ v1.5 B：外观与主题 ============
@@ -1445,6 +1528,294 @@ function scheduleWeather() {
 ipcMain.handle('weather-get', () => getWeather(false));
 ipcMain.handle('weather-refresh', () => getWeather(true));
 
+// ============ v1.8 G 组：LLM 聊天（B4-1） ============
+// 安全红线（PRD §6）：真 key 永不进 IPC 返回值；连通性测试由主进程发起；
+// 对话内容只发往用户配置的 Base URL；无定时/后台 LLM 调用 —— 只有用户点「发送」才发请求。
+const LLM_MONTH_FILE = path.join(app.getPath('userData'), 'mio-llm-month.json'); // 月度花费估算（非对话历史）
+
+function loadLlmMonth() {
+  try { return JSON.parse(fs.readFileSync(LLM_MONTH_FILE, 'utf8')); } catch { return {}; }
+}
+function saveLlmMonth(m) {
+  try { fs.writeFileSync(LLM_MONTH_FILE, JSON.stringify(m)); } catch {}
+}
+// 当月已估算花费（元）：按自然月重置；key 形如 2026-09
+function llmMonthSpent() {
+  const m = loadLlmMonth();
+  const key = (() => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}`; })();
+  if (m.key !== key) return 0;
+  return Number(m.spent) || 0;
+}
+function llmMonthAdd(costYuan) {
+  const m = loadLlmMonth();
+  const d = new Date();
+  const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+  if (m.key !== key) m.key = key, m.spent = 0;
+  m.spent = Number(m.spent) || 0;
+  m.spent += Number(costYuan) || 0;
+  saveLlmMonth(m);
+  return m.spent;
+}
+
+// 估算 token（展示用，不精确）：ceil(字符数 / 3) —— 中文约 1 token/字，英文约 3 字符/token
+function estTokens(text) {
+  const s = String(text || '');
+  if (!s) return 0;
+  return Math.ceil(s.length / 3);
+}
+// 估算花费（元）：输入 token × 输入单价 + 输出 token × 输出单价（单价为「元 / 千 token」）
+function estCost(provider, inTokens, outTokens) {
+  const p = LLM_PRICING[provider] || LLM_PRICING.custom;
+  return ((inTokens * p.in) + (outTokens * p.out)) / 1000;
+}
+
+// 组装请求消息：只发「system（人设）+ 本次用户消息」，不携带历史（LLM-9 单轮）
+function buildChatMessages(ai, userText) {
+  const persona = (ai && ai.persona) || DEFAULT_SETTINGS.ai.persona;
+  const text = String(userText || '').trim();
+  return [
+    { role: 'system', content: persona },
+    { role: 'user', content: text },
+  ];
+}
+
+// 统一错误分类（渲染层据此显示可读文案，不弹系统窗）
+function llmErrorKind(err) {
+  const msg = String((err && err.message) || err || '');
+  if (/401|403|invalid api|unauthorized|authentication/i.test(msg)) return 'unauthorized';
+  if (/timeout|aborted|abort/i.test(msg)) return 'timeout';
+  if (/fetch failed|network|ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|socket/i.test(msg)) return 'network';
+  if (/429|rate limit|quota/i.test(msg)) return 'quota';
+  if (/404|not found/i.test(msg)) return 'notfound';
+  return 'error';
+}
+
+// 主进程发起 OpenAI 兼容 chat 请求（零依赖：Node 内置 fetch + AbortSignal.timeout）
+async function llmRequest({ baseUrl, model, apiKey, maxTokens, userText, minimal = false }) {
+  const url = String(baseUrl || '').trim().replace(/\/+$/, '') + '/chat/completions';
+  const body = {
+    model,
+    max_tokens: Number(maxTokens) || 512,
+    // minimal=true 时只发最小请求（连通性测试，不消耗对话额度）
+    messages: minimal
+      ? [{ role: 'user', content: 'hi' }]
+      : buildChatMessages(getSettings().ai, userText),
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    signal: AbortSignal.timeout(8000),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const j = await res.json();
+  const out = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  if (typeof out !== 'string') throw new Error('返回结构异常');
+  return { text: out.trim(), usage: (j && j.usage) || null };
+}
+
+// 单轮对话（LLM-9 / LLM-10）：调用前检查配置与月度上限；调用后累计估算花费
+async function llmChat(userText) {
+  const ai = getSettings().ai;
+  const apiKey = keychainGet();
+  if (!ai.enabled) return { ok: false, kind: 'disabled', error: 'AI 对话未启用' };
+  if (!apiKey) return { ok: false, kind: 'nokey', error: '还没保存 API Key' };
+  if (!ai.baseUrl || !ai.model) return { ok: false, kind: 'unconfigured', error: '还没配置 Base URL 或模型名' };
+  if (!String(userText || '').trim()) return { ok: false, kind: 'empty', error: '输入为空' };
+  // LLM-7：月度花费上限（估算护栏）—— 达到即停止调用
+  const cap = Number(ai.monthlyCap) || 0;
+  if (cap > 0 && llmMonthSpent() >= cap) {
+    return { ok: false, kind: 'cap', error: '本月额度已用完', spent: llmMonthSpent(), cap };
+  }
+  try {
+    const inTokens = estTokens(JSON.stringify(buildChatMessages(ai, userText)));
+    const r = await llmRequest({ model: ai.model, apiKey, maxTokens: ai.maxTokens, userText });
+    const outTokens = estTokens(r.text);
+    const cost = estCost(ai.provider, inTokens, outTokens);
+    const spent = llmMonthAdd(cost);
+    return {
+      ok: true,
+      reply: r.text,
+      estTokens: inTokens + outTokens,
+      estCost: cost,
+      spent,
+      cap: cap > 0 ? cap : null,
+    };
+  } catch (err) {
+    return { ok: false, kind: llmErrorKind(err), error: String((err && err.message) || err).slice(0, 160) };
+  }
+}
+
+// 连通性测试（LLM-5）：主进程发起最小请求，渲染层只显示结果；不消耗对话额度
+async function llmTest() {
+  const ai = getSettings().ai;
+  if (!ai.baseUrl || !ai.model) return { ok: false, kind: 'unconfigured', error: '还没配置 Base URL 或模型名' };
+  const apiKey = keychainGet();
+  if (!apiKey) return { ok: false, kind: 'nokey', error: '先保存 API Key 再测试' };
+  try {
+    await llmRequest({ model: ai.model, apiKey, maxTokens: 16, minimal: true });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, kind: llmErrorKind(err), error: String((err && err.message) || err).slice(0, 160) };
+  }
+}
+
+// ===== v1.8 G 组 IPC =====
+// llm-get-config：返回 G 组配置 + 预设表 + 脱敏 Key（真 key 永不进 IPC）
+function llmGetConfig() {
+  const ai = getSettings().ai;
+  return {
+    ok: true,
+    ai: {
+      enabled: ai.enabled,
+      provider: ai.provider,
+      baseUrl: ai.baseUrl,
+      model: ai.model,
+      monthlyCap: ai.monthlyCap,
+      maxTokens: ai.maxTokens,
+      persona: ai.persona,
+    },
+    presets: Object.keys(LLM_PRESETS).map((k) => ({ id: k, label: LLM_PRESETS[k].label })),
+    pricing: LLM_PRICING,
+    keyMasked: maskKey(keychainGet()),
+    spent: llmMonthSpent(),
+  };
+}
+ipcMain.handle('llm-get-config', () => llmGetConfig());
+// llm-save-key：把 Key 写入钥匙串（security add-generic-password -U）；永远不回传真 key
+ipcMain.handle('llm-save-key', (_e, payload) => {
+  const key = payload && payload.key;
+  if (!key || !String(key).trim()) return { ok: false, error: 'Key 为空' };
+  const r = keychainSave(String(key).trim());
+  return r.ok ? { ok: true, keyMasked: maskKey(String(key).trim()) } : r;
+});
+// llm-delete-key：删除钥匙串条目
+ipcMain.handle('llm-delete-key', () => {
+  keychainDelete();
+  return { ok: true, keyMasked: '' };
+});
+// llm-test：连通性测试（主进程发起）
+ipcMain.handle('llm-test', () => llmTest());
+// llm-chat：单轮对话（仅用户主动发问）
+ipcMain.handle('llm-chat', (_e, payload) => llmChat(payload && payload.text));
+
+// ============ v1.8 B4-2：首次启动引导 ============
+// 老用户不弹：只有 settings.onboarding.done 不是 true 才显示三步全屏引导。
+// 引导只写 settings（onboarding.done=true），不创建任何额外文件。
+// 三步：① 城市选择（写 weather.city）② 是否启用 AI（写 ai.enabled）③ 权限说明（只读展示）
+function onboardingGet() {
+  // 自检模式不弹引导：MIO_AUTOTEST=1 时视为已引导（避免全屏覆盖层干扰截图与点击走查）
+  if (process.env.MIO_AUTOTEST === '1') {
+    return { ok: true, done: true, city: null, aiEnabled: false };
+  }
+  const s = getSettings();
+  return {
+    ok: true,
+    done: !!s.onboarding && s.onboarding.done === true,
+    city: (s.weather && s.weather.city) || null,
+    aiEnabled: !!(s.ai && s.ai.enabled),
+  };
+}
+ipcMain.handle('onboarding-get', () => onboardingGet());
+function onboardingSet(payload) {
+  const p = payload || {};
+  const patch = {};
+  if (p.city !== undefined) patch.weather = { city: p.city };
+  if (p.aiEnabled !== undefined) patch.ai = { enabled: !!p.aiEnabled };
+  if (p.done === true) patch.onboarding = { done: true };
+  patchSettings(patch);
+  return { ok: true, done: !!getSettings().onboarding && getSettings().onboarding.done === true };
+}
+ipcMain.handle('onboarding-set', (_e, payload) => onboardingSet(payload));
+
+// ============ v1.8 B4-3：自动更新 ============
+// 启动时对比 GitHub Releases（latest），24h 限频（mio-update-check.json 记录 lastCheckAt）。
+// 失败静默（不弹系统通知、不打断用户）；发现新版本时只推一次 update-notice 事件，
+// 渲染层在「关于」页显示非阻塞提示条（不自动下载、不强制）。
+const UPDATE_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24h
+// 仓库 owner/repo 从 package.json 的 repository 字段读取（PRD Q2）：无仓库 → 静默禁用更新检查；
+// 避免硬编码在仓库迁移/改名后失配。格式：https://github.com/<owner>/<repo>.git → <owner>/<repo>
+const _repoUrl = (() => { try { return (require('./package.json').repository && require('./package.json').repository.url) || ''; } catch { return ''; } })();
+const UPDATE_REPO = String(_repoUrl).replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').trim();
+const UPDATE_CHECK_FILE = path.join(app.getPath('userData'), 'mio-update-check.json');
+let updateLastNoticeAt = 0; // 节流：同一版本只提示一次
+
+function loadUpdateCheck() {
+  try { return JSON.parse(fs.readFileSync(UPDATE_CHECK_FILE, 'utf8')); } catch { return {}; }
+}
+function saveUpdateCheck(m) {
+  try { fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify(m)); } catch {}
+}
+// 从 GitHub Releases API 拉最新版本（零依赖：Node 内置 fetch + AbortSignal.timeout）
+async function fetchLatestRelease() {
+  const url = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(8000),
+    headers: { Accept: 'application/vnd.github+json' },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const j = await res.json();
+  const tag = String(j.tag_name || '').trim();
+  if (!tag) throw new Error('tag 为空');
+  return { tag, name: String(j.name || tag), url: String(j.html_url || '') };
+}
+// 比较版本号：返回 true 表示 remote 比 current 新（支持 v1.8.0 / 1.8.0 两种写法）
+function isNewerVersion(remote, current) {
+  const parse = (v) => String(v || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  const a = parse(remote);
+  const b = parse(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+// 启动时静默检查（24h 限频；失败静默；发现新版本发一次 update-notice 事件）
+async function checkForUpdates({ force = false } = {}) {
+  if (process.env.MIO_AUTOTEST === '1') return { ok: false, skipped: 'autotest' }; // 自检不打扰
+  if (!UPDATE_REPO) return { ok: false, skipped: 'no-repo' }; // 无仓库地址 → 静默禁用（PRD Q2）
+  const st = loadUpdateCheck();
+  const now = Date.now();
+  if (!force && Number(st.lastCheckAt) && now - Number(st.lastCheckAt) < UPDATE_CHECK_INTERVAL) {
+    return { ok: false, skipped: 'rate-limited' };
+  }
+  saveUpdateCheck({ ...st, lastCheckAt: now });
+  try {
+    const remote = await fetchLatestRelease();
+    const current = app.getVersion();
+    const hasNew = isNewerVersion(remote.tag, current);
+    const key = `${remote.tag}@${current}`;
+    // 同一版本只提示一次（节流 24h）
+    if (hasNew && st.lastNoticeKey !== key && now - updateLastNoticeAt > UPDATE_CHECK_INTERVAL) {
+      updateLastNoticeAt = now;
+      saveUpdateCheck({ ...loadUpdateCheck(), lastNoticeKey: key });
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('update-notice', {
+          hasNew: true,
+          version: remote.tag,
+          name: remote.name,
+          url: remote.url,
+        });
+      }
+    }
+    return { ok: true, hasNew, current, latest: remote.tag, url: remote.url };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err).slice(0, 120) };
+  }
+}
+
+// 手动检查（设置页「检查更新」按钮）：强制绕过 24h 限频，但结果仍是静默通知
+ipcMain.handle('update-check', () => checkForUpdates({ force: true }));
+// 渲染层订阅 update-notice 事件（主进程启动时自动检查、发现新版本推送一次）
+ipcMain.handle('update-check-status', () => {
+  const st = loadUpdateCheck();
+  return { ok: true, lastCheckAt: st.lastCheckAt || null, lastNoticeKey: st.lastNoticeKey || null };
+});
+
 // ============ v1.7：磁盘 IO（状态页小指标，不做独立卡片 —— 路线图 §6.2 降级决策）============
 // iostat 的第二个采样才是「刚才 1 秒」，第一个是开机以来的均值。采样本身要 1 秒，
 // 所以放后台 15s 一次、只写缓存，绝不在 system-full 里同步等 —— 状态页不能为一个小指标多卡 1 秒
@@ -1470,18 +1841,26 @@ function sampleDiskIO() {
 
 
 
-// ============ v1.6 B2-1：剪贴板历史（只认文本 · 只在内存）============
-// 采集全在主进程内存完成，渲染层只拿 preview，真文本永不出主进程 ——
+// ============ v1.6 B2-1 / v1.7.6 增强：剪贴板历史（文本 + 图片 · 只在内存）============
+// 采集全在主进程内存完成，渲染层只拿 preview / 缩略图，真文本与原图永不出主进程 ——
 // 零落盘天然满足隐私可验证要求：userData grep 无内容、退出即归零
-let clipItems = [];      // ClipItem[]，index 0 = 最新
+let clipItems = [];      // ClipItem[]，index 0 = 最新（{type:'text'|'image', ...}）
 let clipPaused = false;  // 不落盘（Q5）
 let clipTimer = null;    // 800ms 轮询句柄
 let clipLastText = '';   // 相邻去重 + 取回防重入基线
+let clipLastImgKey = ''; // 图片相邻去重（PNG 的 sha256）
 let clipSeq = 0;         // id 递增序号
 let clipNoticeAt = 0;    // 密码过滤轻提示节流时间戳
+let clipPollTick = 0;    // 轮询计数：图片比对按此节流
 const CLIP_MAX_PIN = 3;          // 钉住上限（Q2）
 const CLIP_NOTICE_GAP = 30 * 1000; // 过滤提示最小间隔（Q3）
 const CLIP_PREVIEW_LEN = 120;      // 出渲染层的预览截断长度
+// v1.7.6：图片（含截图）支持。图片比文本大得多，必须单独限额 + 节流，否则内存/CPU 双爆
+const CLIP_MAX_IMG = 5;                      // 图片条目上限
+const CLIP_MAX_IMG_BYTES = 8 * 1024 * 1024;  // 单张 PNG 上限 8MB，超出不采集
+const CLIP_MAX_TEXT = 200 * 1024;            // 单条文本上限 200KB，超出不采集
+const CLIP_THUMB_W = 96;                     // 缩略图宽度（出渲染层只给缩略图）
+const CLIP_IMG_EVERY = 4;                    // 每 4 次轮询（约 3.2s）才比对一次图片
 
 const clipPreview = (text) => {
   const one = String(text).replace(/\s+/g, ' ').trim();
@@ -1496,8 +1875,15 @@ const isPasswordLike = (text) => {
   return /[a-z]/.test(t) && /[A-Z]/.test(t) && /\d/.test(t);
 };
 
-// 出渲染层的形状：只给 preview，不给全文
-const clipPublic = (it) => ({ id: it.id, preview: clipPreview(it.text), pinned: it.pinned, t: it.t });
+// 出渲染层的形状：只给 preview / 缩略图，不给全文与原图
+const clipPublic = (it) => ({
+  id: it.id,
+  preview: it.type === 'image' ? `🖼 图片 ${it.w}×${it.h}` : clipPreview(it.text),
+  pinned: it.pinned,
+  t: it.t,
+  type: it.type || 'text',
+  thumb: it.type === 'image' ? (it.thumb || '') : '', // 出渲染层的只是 96px 缩略图
+});
 
 function clipSnapshot() {
   const s = getSettings().clipboard;
@@ -1508,6 +1894,7 @@ function clipSnapshot() {
     enabled: !!s.enabled,
     limit: Number(s.limit) || 10,
     pinnedCount: clipItems.filter((i) => i.pinned).length,
+    imgCount: clipItems.filter((i) => i.type === 'image').length, // v1.7.6
   };
 }
 
@@ -1534,6 +1921,7 @@ function addClip(text) {
   const s = getSettings().clipboard;
   if (!s.enabled || clipPaused) return;              // 关闭 / 暂停 → 不采集
   if (typeof text !== 'string' || text.trim() === '') return; // 空串 / 纯空白 → 丢弃
+  if (text.length > CLIP_MAX_TEXT) return;           // v1.7.6：超大文本不采集（内存保护）
   if (s.filterPassword && isPasswordLike(text)) {
     // 只跳过采集、不动系统剪贴板；节流回轻提示，避免每次复制都弹
     const now = Date.now();
@@ -1543,8 +1931,9 @@ function addClip(text) {
     }
     return;
   }
-  // 完全相同文本已在列表 → 不新增，改置顶（钉住条原地不动）
-  const same = clipItems.find((i) => i.text === text);
+  // 相同文本已在列表 → 不新增，改置顶（trim 后比较，前后空白差异不算新条目）
+  const t2 = text.trim();
+  const same = clipItems.find((i) => i.type !== 'image' && String(i.text).trim() === t2);
   if (same) {
     if (!same.pinned) {
       clipItems.splice(clipItems.indexOf(same), 1);
@@ -1553,17 +1942,99 @@ function addClip(text) {
     }
     return;
   }
-  clipItems.unshift({ id: 'c_' + (++clipSeq), text, pinned: false, t: Date.now() });
+  clipItems.unshift({ id: 'c_' + (++clipSeq), type: 'text', text, pinned: false, t: Date.now() });
   enforceLimit();
   broadcastClip();
 }
 
+// v1.7.6：图片（含截图）。主进程留 PNG Buffer 供「取回」，出渲染层只给 96px 缩略图
+function addClipImage(img) {
+  const s = getSettings().clipboard;
+  if (!s.enabled || clipPaused) return;
+  try {
+    if (!img || img.isEmpty()) return;
+    const size = img.getSize();
+    const png = img.toPNG();
+    if (!png || !png.length) return;
+    if (png.length > CLIP_MAX_IMG_BYTES) return; // 超大图不采集，避免内存爆炸
+    const key = crypto.createHash('sha256').update(png).digest('hex');
+    const same = clipItems.find((i) => i.type === 'image' && i.key === key);
+    if (same) {
+      if (!same.pinned) {
+        clipItems.splice(clipItems.indexOf(same), 1);
+        clipItems.unshift(same);
+        broadcastClip();
+      }
+      return;
+    }
+    let thumb = '';
+    try {
+      thumb = img.resize({ width: Math.min(CLIP_THUMB_W, size.width), quality: 'better' }).toDataURL();
+    } catch {}
+    clipItems.unshift({
+      id: 'c_' + (++clipSeq), type: 'image', key, png, thumb,
+      w: size.width, h: size.height, text: '', pinned: false, t: Date.now(),
+    });
+    enforceImageLimit();
+    enforceLimit();
+    broadcastClip();
+  } catch {}
+}
+
+// 图片单独限额：超上限时从尾部剔除最旧的未钉图片
+function enforceImageLimit() {
+  let count = clipItems.filter((i) => i.type === 'image').length;
+  while (count > CLIP_MAX_IMG) {
+    let idx = -1;
+    for (let i = clipItems.length - 1; i >= 0; i--) {
+      if (clipItems[i].type === 'image' && !clipItems[i].pinned) { idx = i; break; }
+    }
+    if (idx === -1) break; // 全是钉住的图片
+    clipItems.splice(idx, 1);
+    count -= 1;
+  }
+}
+
+// Mio 自己截图后立刻采一次（轮询有节流，这里保证「截图即进历史」的即时感）
+function captureClipImageNow() {
+  try {
+    const img = clipboard.readImage();
+    if (!img || img.isEmpty()) return;
+    const png = img.toPNG();
+    clipLastImgKey = png && png.length ? crypto.createHash('sha256').update(png).digest('hex') : '';
+    clipLastText = '';
+    addClipImage(img);
+  } catch {}
+}
+
 // 轮询：与上一条逐字符比较去重（不引 crypto/hash）
 function clipPoll() {
+  const s = getSettings().clipboard;
+  if (!s.enabled || clipPaused) return;
+  clipPollTick += 1;
+  // v1.7.6：图片比对。toPNG + sha256 比文本贵得多，按 CLIP_IMG_EVERY 节流
+  if (clipPollTick % CLIP_IMG_EVERY === 0) {
+    try {
+      const img = clipboard.readImage();
+      if (img && !img.isEmpty()) {
+        const png = img.toPNG();
+        const key = png && png.length ? crypto.createHash('sha256').update(png).digest('hex') : '';
+        if (key && key !== clipLastImgKey) {
+          clipLastImgKey = key;
+          clipLastText = ''; // 图片替换了剪贴板内容 → 文本基线作废
+          addClipImage(img);
+          return;            // 同一时刻只可能有一种新内容
+        }
+        return;              // 图片没变 → 无事发生
+      }
+      clipLastImgKey = '';   // 剪贴板已无图片
+    } catch {}
+  }
   let text = '';
   try { text = clipboard.readText(); } catch { return; }
   if (text === clipLastText) return;
   clipLastText = text;
+  clipLastImgKey = '';       // 换成文本 → 图片基线作废
   addClip(text);
 }
 
@@ -1592,8 +2063,21 @@ function setClipPaused(paused) {
 function clipCopy(id) {
   const item = clipItems.find((i) => i.id === id);
   if (!item) return { ok: false, error: '条目已不存在' };
+  if (item.type === 'image') {
+    // v1.7.6：图片取回 —— 写回系统剪贴板，并把基线图记为它，防轮询重复入库
+    try { clipboard.writeImage(nativeImage.createFromBuffer(item.png)); } catch { return { ok: false, error: '写入剪贴板失败' }; }
+    clipLastImgKey = item.key;
+    clipLastText = '';
+    if (!item.pinned) {
+      clipItems.splice(clipItems.indexOf(item), 1);
+      clipItems.unshift(item);
+    }
+    broadcastClip();
+    return { ok: true, preview: `图片 ${item.w}×${item.h}` };
+  }
   try { clipboard.writeText(item.text); } catch { return { ok: false, error: '写入剪贴板失败' }; }
   clipLastText = item.text; // 取回后立即更新基线，防轮询把同一条重复入库
+  clipLastImgKey = '';
   if (!item.pinned) {
     clipItems.splice(clipItems.indexOf(item), 1);
     clipItems.unshift(item); // 取回即置顶
@@ -1751,6 +2235,8 @@ async function actScreenshot(mode) {
     if (err.code === 1) return { ok: true, canceled: true }; // Esc 取消 → 静默
     return { ok: false, error: '截图没有完成，请再试一次' };
   }
+  // v1.7.6：截图结果在剪贴板里，立刻采进历史（不等轮询节流），「截图即进历史」
+  captureClipImageNow();
   return { ok: true, blank: firstTime }; // not-determined 首次可能空白，提示重启
 }
 
@@ -2105,6 +2591,10 @@ app.whenReady().then(() => {
   // 每天至多一次、错过顺延；自检模式跳过（autotest 会用自己的假目标单独验证）
   if (process.env.MIO_AUTOTEST !== '1') {
     setTimeout(() => { runAutoClean().catch(() => {}); }, 15000);
+  }
+  // v1.8 B4-3 自动更新：启动 ~10s 后静默检查（24h 限频，失败静默，不打扰用户）
+  if (process.env.MIO_AUTOTEST !== '1') {
+    setTimeout(() => { checkForUpdates().catch(() => {}); }, 10000);
   }
   // v1.4 E：前台应用探测（实测 8.5ms/次，2s 一次成本可忽略）
   stealthTimer = setInterval(stealthTick, 2000);
@@ -2731,6 +3221,56 @@ app.whenReady().then(() => {
         patchSettings({ autoClean: acPrev }); // 还原现场
         // 测试数据只走废纸篓通道收尾（绝不 rm）
         for (const p of [ddF1, ddF2, ddF3, ddFDiff, aF1, aF2, aF3]) { try { await shell.trashItem(p); } catch {} }
+
+        // ================= v1.8 断言（B4-1 LLM / B4-2 引导 / B4-3 自动更新） =================
+        // schema v6：ai + onboarding 长出、老键一个不丢、默认关闭
+        log('V18_SCHEMA2: ' + JSON.stringify({
+          v: getSettings()._v,
+          hasAi: 'ai' in getSettings(),
+          hasOnboarding: 'onboarding' in getSettings(),
+          aiOff: getSettings().ai.enabled === false,
+          obNotDone: getSettings().onboarding.done === false,
+          oldKept: ['general', 'appearance', 'chime', 'health', 'notify', 'stealth', 'clipboard', 'weather', 'autoClean'].every((k) => k in getSettings()),
+        }));
+        // 引导 IPC：自检模式 onboarding-get 必须返回 done=true（不弹覆盖层）
+        const obGet = onboardingGet();
+        log('V18_ONBOARDING: ' + JSON.stringify({
+          getOk: obGet.ok === true,
+          doneInAutotest: obGet.done === true,
+          setDone: onboardingSet({ done: true }).done === true,
+        }));
+        // 自动更新：自检模式直接跳过（不联网、不写文件）
+        const up = await checkForUpdates({ force: true });
+        log('V18_UPDATE: ' + JSON.stringify({
+          skipped: up.skipped === 'autotest',
+          noNetwork: up.ok === false,
+        }));
+        // LLM：配置拉取（无 Key 时 keyMasked 为空串，真 key 永不进 IPC）
+        const llmCfg = llmGetConfig();
+        log('V18_LLM: ' + JSON.stringify({
+          ok: llmCfg && llmCfg.ok === true,
+          hasAi: !!(llmCfg && llmCfg.ai),
+          presets5: !!(llmCfg && llmCfg.presets && llmCfg.presets.length === 5),
+          keyMaskedEmpty: !!(llmCfg && llmCfg.keyMasked === ''),
+          spent0: !!(llmCfg && llmCfg.spent === 0),
+        }));
+        // LLM 未启用时 llm-chat 必须拒绝（不联网、不发请求）
+        const llmChatOff = await llmChat('hi');
+        log('V18_LLM_OFF: ' + JSON.stringify({
+          okFalse: llmChatOff && llmChatOff.ok === false,
+          kind: llmChatOff && llmChatOff.kind,
+        }));
+        // 渲染层 G 组 UI 存在（设置页 AI 助手组 + 常用页聊天卡）
+        await js(`document.querySelector('[data-tab="settings"]').click()`);
+        await sleep(500);
+        log('V18_SETGROUPS: ' + await js(`JSON.stringify({
+          groups: [...document.querySelectorAll('#page-settings .sgroup')].map(g => g.dataset.group).join(','),
+          hasAiGroup: !!document.getElementById('swAi'),
+          hasSegAi: !!document.getElementById('segAiProvider'),
+          hasAiSave: !!document.getElementById('aiSaveBtn'),
+          hasUpdateCheck: !!document.getElementById('updateCheckBtn'),
+        })`));
+        await shot('electron-v18-settings.png');
 
         log('AUTOTEST_DONE');
         setTimeout(() => app.quit(), 600); // 自检跑完自动退出，便于脚本化
