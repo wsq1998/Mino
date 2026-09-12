@@ -2,11 +2,11 @@
 // B4-4 拆分：从 main.js 抽出。零行为变化 —— 只搬定义，不动逻辑。
 // 依赖：无（不 require electron/app/win），保证纯函数可单测。
 
-const SETTINGS_VERSION = 7;
+const SETTINGS_VERSION = 8;
 
 const DEFAULT_SETTINGS = {
-  _v: 7,
-  general: { autoOpen: false },
+  _v: 8,
+  general: { autoOpen: false, lang: 'auto' }, // v2.0 ENG-2：zh | en | auto（默认跟随系统）
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
     size: 'md',           // sm | md | lg
@@ -41,7 +41,7 @@ const DEFAULT_SETTINGS = {
   },
   stealth: { enabled: true, opacity: 0.12, apps: null }, // apps=null → 用内置名单
   // ===== v1.6 新增分组 =====
-  clipboard: { enabled: true, limit: 10, filterPassword: false }, // E1/E2/E3
+  clipboard: { enabled: true, limit: 10, filterPassword: false, imageHistory: false, imagePersist: 0 }, // E1/E2/E3 + v2.0 F9 图片历史（默认不落盘）
   capture: { mode: 'region', dest: 'clipboard' },                 // E4（dest 本版恒为剪贴板）
   hotkey: { trigger: 'Alt+Space' },                                // D1（Electron accelerator 规范串）
   consent: { permsIntroSeen: false },                              // 统一说明弹层「只弹一次」标志
@@ -73,6 +73,27 @@ const DEFAULT_SETTINGS = {
   },
   // v1.8 B4-2：首次启动引导标记。done=true 表示已引导过（老用户不弹）
   onboarding: { done: false },
+  // ===== v2.0 新增分组（F1–F13 底座，只增不改、老键名不动）=====
+  // F1 电量 / 满电充电提醒：默认关（避免打扰）；low/full 为百分比阈值
+  battery: { enabled: false, low: 20, full: 80 },
+  // F2 摄像头 / 麦克风占用警示：monitor 开关 + 忽略名单（App 进程名）
+  privacy: { monitor: true, ignoreApps: [] },
+  // F3 蓝牙设备电量：默认开；interval 秒（60s 缓存）
+  bluetooth: { enabled: true, interval: 60 },
+  // F4 自定义循环提醒：items 数组 [{ id, name, rule, enabled, nextTs }]
+  recurring: { items: [] },
+  // F6 网络 IP 卡片：enabled 开关
+  network: { enabled: true },
+  // F7 应用卸载：二次确认强制开启（不可关）
+  uninstall: { confirmAlways: true },
+  // F8 窗口分屏：enabled 开关 + hotkey 快捷键（null = 未录制）
+  split: { enabled: true, hotkey: null },
+  // F10 文件暂存区 / 中转站：只记路径引用，不移动/复制/删除源文件
+  stash: { enabled: true, persist: true, items: [] },
+  // F11 常用文本片段：明文落盘（上限 20 条 / 2000 字符）
+  snippets: { items: [] },
+  // F12 磁盘空间太阳图：默认开启
+  sunburst: { enabled: true },
 };
 
 // 不透明度的**唯一存储口径**是单位区间小数（appearance 0.3–1 / stealth 0.05–0.9），
@@ -143,6 +164,76 @@ function sanitizeSettings(s) {
         app: String(it.app).trim(),
       }));
   }
+  // ===== v2.0 收口（F1–F13 底座）=====
+  // ENG-2 语言：只许 zh | en | auto
+  if (!s.general || typeof s.general !== 'object') s.general = {};
+  s.general.lang = ['zh', 'en', 'auto'].includes(s.general.lang) ? s.general.lang : 'auto';
+  // F1 battery：布尔 + 数值 clamp（low 5–95 / full 20–100，且 low < full）
+  if (!s.battery || typeof s.battery !== 'object') s.battery = {};
+  s.battery.enabled = !!s.battery.enabled;
+  const low = clamp(Number(s.battery.low) || 20, 5, 95);
+  const full = clamp(Number(s.battery.full) || 80, 20, 100);
+  s.battery.low = Math.min(low, full - 5);
+  s.battery.full = Math.max(full, s.battery.low + 5);
+  // F2 privacy：monitor 布尔 + ignoreApps 数组白名单（非空字符串进程名）
+  if (!s.privacy || typeof s.privacy !== 'object') s.privacy = {};
+  s.privacy.monitor = !!s.privacy.monitor;
+  s.privacy.ignoreApps = Array.isArray(s.privacy.ignoreApps)
+    ? s.privacy.ignoreApps.filter((x) => typeof x === 'string' && x.trim() !== '').slice(0, 50)
+    : [];
+  // F3 bluetooth：enabled 布尔 + interval 数值（30–3600s）
+  if (!s.bluetooth || typeof s.bluetooth !== 'object') s.bluetooth = {};
+  s.bluetooth.enabled = !!s.bluetooth.enabled;
+  const btInt = Number(s.bluetooth.interval);
+  s.bluetooth.interval = Number.isFinite(btInt) ? clamp(Math.round(btInt), 30, 3600) : 60;
+  // F4 recurring.items：数组收口 —— 每条必须 id/name/rule 合法，enabled 布尔，nextTs 数字
+  if (!Array.isArray(s.recurring.items)) s.recurring.items = [];
+  s.recurring.items = s.recurring.items
+    .filter((it) => it && typeof it === 'object' && String(it.name || '').trim() !== '' && String(it.rule || '').trim() !== '')
+    .slice(0, 20)
+    .map((it) => ({
+      id: String(it.id || '').trim() || `rec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      name: String(it.name).trim().slice(0, 60),
+      rule: String(it.rule).trim().slice(0, 120),
+      enabled: it.enabled !== false,
+      nextTs: Number(it.nextTs) > 0 ? Number(it.nextTs) : 0,
+    }));
+  // F6 network：enabled 布尔
+  if (!s.network || typeof s.network !== 'object') s.network = {};
+  s.network.enabled = !!s.network.enabled;
+  // F7 uninstall：confirmAlways 强制 true（不可关）
+  if (!s.uninstall || typeof s.uninstall !== 'object') s.uninstall = {};
+  s.uninstall.confirmAlways = true;
+  // F8 split：enabled 布尔 + hotkey 字符串或 null
+  if (!s.split || typeof s.split !== 'object') s.split = {};
+  s.split.enabled = !!s.split.enabled;
+  s.split.hotkey = (typeof s.split.hotkey === 'string' && s.split.hotkey.trim()) ? s.split.hotkey.trim() : null;
+  // F9 clipboard 扩展：imageHistory 布尔 + imagePersist 数值（0 = 关，1–200 张）
+  if (!s.clipboard || typeof s.clipboard !== 'object') s.clipboard = {};
+  s.clipboard.imageHistory = !!s.clipboard.imageHistory;
+  const ip = Number(s.clipboard.imagePersist);
+  s.clipboard.imagePersist = Number.isFinite(ip) ? clamp(Math.round(ip), 0, 200) : 0;
+  // F10 stash：enabled/persist 布尔 + items 数组（每条 { id, path, name, size, addedAt }）
+  if (!s.stash || typeof s.stash !== 'object') s.stash = {};
+  s.stash.enabled = !!s.stash.enabled;
+  s.stash.persist = !!s.stash.persist;
+  s.stash.items = Array.isArray(s.stash.items)
+    ? s.stash.items.filter((it) => it && typeof it === 'object' && typeof it.path === 'string' && it.path.trim() !== '').slice(0, 100)
+    : [];
+  // F11 snippets：数组收口（最多 20 条，每条 name/text 非空且 text ≤ 2000 字符）
+  if (!Array.isArray(s.snippets.items)) s.snippets.items = [];
+  s.snippets.items = s.snippets.items
+    .filter((it) => it && typeof it === 'object' && String(it.name || '').trim() !== '' && typeof it.text === 'string')
+    .slice(0, 20)
+    .map((it) => ({
+      id: String(it.id || '').trim() || `snip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      name: String(it.name || '').trim().slice(0, 40),
+      text: String(it.text).slice(0, 2000),
+      createdAt: Number(it.createdAt) > 0 ? Number(it.createdAt) : Date.now(),
+    }));
+  // F12 sunburst：enabled 布尔
+  if (!s.sunburst || typeof s.sunburst !== 'object') s.sunburst = {};
+  s.sunburst.enabled = !!s.sunburst.enabled;
   return s;
 }
 

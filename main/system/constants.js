@@ -5,6 +5,9 @@ const PROC_BLACKLIST = new Set([
   'windowserver', 'loginwindow', 'kernel_task', 'launchd', 'cfprefsd',
   'finder', 'dock', 'systemuiserver', 'spotlight', 'mds', 'distnoted',
   'opendirectoryd', 'syslogd', 'configd', 'powerd', 'mio', 'electron',
+  // v2.0 F2：摄像头/麦克风系统进程 —— 占用检测里永远不提示（系统自持有，非用户 App）
+  'vdc', 'vdcapture', 'cmio', 'cmioextension', 'cmioalternate',
+  'corecaptured', 'coremediaio', 'coreaudiod', 'audioserverd',
 ]);
 
 const STEALTH_APPS = [
@@ -26,6 +29,8 @@ const DEEP_LINKS = {
   screen: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
   accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
   automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
+  // v2.0 F8 分屏：复用「辅助功能」权限（设计 §1.1 F8，不新增 TCC 类型）
+  split: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
 };
 
 module.exports = { PROC_BLACKLIST, STEALTH_APPS, DEEP_LINKS };

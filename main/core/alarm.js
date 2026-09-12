@@ -6,23 +6,27 @@
 // 数据：{ endTs, minutes, label, createdAt }
 // 到点行为由调用方注入 onFire（main.js 里发系统通知 + 广播给 renderer 弹气泡 + 声音）。
 
-const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
-const alarmFile = path.join(app.getPath('userData'), 'alarm.json');
-let _onFire = null; // 到点回调，由 main.js 注入
+// 惰性取 electron：纯函数层在 node --test 下也能加载
+function electron() {
+  try { return require('electron'); } catch { return {}; }
+}
+
+const alarmFile = () => path.join(electron().app.getPath('userData'), 'alarm.json');
+const _onFire = []; // 到点回调列表，由 main.js / recurring.js 注入（v2.0：支持多订阅者）
 
 function load() {
   try {
-    const d = JSON.parse(fs.readFileSync(alarmFile, 'utf8'));
+    const d = JSON.parse(fs.readFileSync(alarmFile(), 'utf8'));
     // 只认「还在未来」的闹钟；过期的直接清掉（重启后不补响）
     if (d && typeof d.endTs === 'number' && d.endTs > Date.now()) return d;
   } catch {}
   return null;
 }
 function save(a) {
-  try { fs.writeFileSync(alarmFile, JSON.stringify(a)); } catch {}
+  try { fs.writeFileSync(alarmFile(), JSON.stringify(a)); } catch {}
 }
 
 // 启动一个倒计时。minutes = 分钟数（>0）；label 用于提醒文案。
@@ -33,7 +37,7 @@ function start(minutes, label) {
   return state();
 }
 function cancel() {
-  try { fs.unlinkSync(alarmFile); } catch {}
+  try { fs.unlinkSync(alarmFile()); } catch {}
   return { running: false };
 }
 // 当前状态（含剩余秒数）。返回 null 表示没有进行中的倒计时。
@@ -49,13 +53,22 @@ function state() {
 // 那样到点的闹钟就永远触发不了了）。
 function tick() {
   let a = null;
-  try { a = JSON.parse(fs.readFileSync(alarmFile, 'utf8')); } catch { return; }
+  try { a = JSON.parse(fs.readFileSync(alarmFile(), 'utf8')); } catch { return; }
   if (!a || typeof a.endTs !== 'number') return;
   if (Date.now() >= a.endTs) {
     cancel();
-    if (_onFire) _onFire(a);
+    for (const cb of _onFire) { try { cb(a); } catch {} }
   }
 }
-function onFire(cb) { _onFire = cb; }
+// 注册到点回调（返回取消订阅函数）。v2.0：多订阅者复用同一通道，
+// recurring.js 通过它发「循环提醒到点」通知，互不覆盖。
+function onFire(cb) {
+  if (typeof cb !== 'function') return () => {};
+  _onFire.push(cb);
+  return () => {
+    const i = _onFire.indexOf(cb);
+    if (i >= 0) _onFire.splice(i, 1);
+  };
+}
 
 module.exports = { alarmFile, start, cancel, state, tick, onFire };

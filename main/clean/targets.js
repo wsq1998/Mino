@@ -33,4 +33,29 @@ function isBlacklistedPath(p) {
   return false;
 }
 
-module.exports = { HOME, SCAN_TARGETS, isBlacklistedPath };
+// v2.0 F7 卸载白名单扩展：只对 safeTrash 放行的卸载目标路径。
+// 允许：
+//   /Applications/<Name>.app、~/Applications/<Name>.app
+//   ~/Library/Preferences/<bundleId>.plist
+//   ~/Library/Application Support/<Name>/{...}
+//   ~/Library/Caches/<Name>
+//   ~/Library/Saved Application State/<bundleId>.savedState
+// 系统级（/System、/usr、/Library 顶层）一律拒绝。
+function isUninstallTarget(p) {
+  if (typeof p !== 'string' || !p) return false;
+  const norm = path.normalize(p);
+  if (norm.startsWith('/System') || norm.startsWith('/usr') || norm === '/Library' || norm.startsWith('/Library/')) return false;
+  const appsRoots = ['/Applications', path.join(HOME, 'Applications')];
+  for (const root of appsRoots) {
+    if (norm.startsWith(root + path.sep) && norm.endsWith('.app')) return true;
+  }
+  if (!norm.startsWith(HOME + path.sep)) return false;
+  const rel = norm.slice(HOME.length);
+  if (/^\/Library\/Preferences\/[^/]+\.plist$/.test(rel)) return true;
+  if (/^\/Library\/Application Support\/[^/]+/.test(rel)) return true;
+  if (/^\/Library\/Caches\/[^/]+/.test(rel)) return true;
+  if (/^\/Library\/Saved Application State\/[^/]+\.savedState$/.test(rel)) return true;
+  return false;
+}
+
+module.exports = { HOME, SCAN_TARGETS, isBlacklistedPath, isUninstallTarget };
