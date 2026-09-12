@@ -96,4 +96,15 @@ contextBridge.exposeInMainWorld('mio', {
   updateCheck: () => ipcRenderer.invoke('update-check'),
   updateCheckStatus: () => ipcRenderer.invoke('update-check-status'),
   onUpdateNotice: (cb) => ipcRenderer.on('update-notice', (_e, data) => cb(data)),
+  // ===== v1.9 新增 =====
+  // 番茄钟统计与周报：渲染层完成一个工作阶段上报，主进程持久化 + 聚合
+  pomoLog: (work) => ipcRenderer.invoke('pomo-log', work),
+  pomoStats: () => ipcRenderer.invoke('pomo-stats'),
+  // 真正的闹钟/倒计时：主进程持久化，renderer 收起/重启不丢
+  alarmStart: (minutes, label) => ipcRenderer.invoke('alarm-start', minutes, label),
+  alarmCancel: () => ipcRenderer.invoke('alarm-cancel'),
+  alarmState: () => ipcRenderer.invoke('alarm-state'),
+  onAlarmFired: (cb) => ipcRenderer.on('alarm-fired', (_e, d) => cb(d)),
+  // 快捷启动 App：open -a <name>
+  appLaunch: (name) => ipcRenderer.invoke('app-launch', name),
 });

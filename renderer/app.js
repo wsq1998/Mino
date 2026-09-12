@@ -7,7 +7,7 @@ const bridge = (window.mio && typeof window.mio.getStats === 'function') ? windo
 const previewSettings = {
   _v: 6,
   general: { autoOpen: false },
-  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
+  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null, material: 'glass' },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
   notify: { style: 'both' },
@@ -56,6 +56,7 @@ const api = bridge || {
       { name: 'WeChat', cpu: 1.2, mem: 2.9, pid: 4321 },
       { name: 'node', cpu: 0.8, mem: 1.5, pid: 9102 },
     ],
+    mio: { cpu: 1, rss: 128 * 1024 * 1024, heap: 24 * 1024 * 1024, renderer: 96 * 1024 * 1024 },
   }),
   cleanScan: async () => ([
     { id: 'user-caches', name: '用户缓存', level: 'green', note: '应用缓存，删除后自动重建', size: 3.2e9, files: 8120 },
@@ -83,6 +84,28 @@ const api = bridge || {
   ]),
   clearMessages: async () => true,
   logMessage: (t, b) => console.log('[message]', t, b),
+  // v1.9：番茄钟统计（浏览器预览用内存态 mock）
+  _pomoMock: { records: [{ t: Date.now() - 86400000, work: 25 }, { t: Date.now() - 172800000, work: 25 }] },
+  pomoLog: async (work) => { api._pomoMock.records.push({ t: Date.now(), work }); return { ok: true }; },
+  pomoStats: async () => {
+    const rs = api._pomoMock.records;
+    const mins = rs.reduce((a, r) => a + r.work, 0);
+    return { total: { count: rs.length, mins }, today: { count: rs.length, mins }, week: { count: rs.length, mins }, daily: [], report: `浏览器预览：${rs.length} 个 · ${mins} 分钟` };
+  },
+  // v1.9：真正的闹钟/倒计时（浏览器预览用内存态 mock）
+  _alarmMock: null,
+  alarmStart: async (minutes, label) => {
+    api._alarmMock = { endTs: Date.now() + (Number(minutes) || 25) * 60000, minutes: Number(minutes) || 25, label: label || '', running: true };
+    return { running: true, remaining: Math.round((api._alarmMock.endTs - Date.now()) / 1000), minutes: api._alarmMock.minutes, label: api._alarmMock.label };
+  },
+  alarmCancel: async () => { api._alarmMock = null; return { running: false }; },
+  alarmState: async () => {
+    if (!api._alarmMock) return { running: false };
+    const remaining = Math.max(0, Math.round((api._alarmMock.endTs - Date.now()) / 1000));
+    return { running: remaining > 0, endTs: api._alarmMock.endTs, minutes: api._alarmMock.minutes, label: api._alarmMock.label, remaining };
+  },
+  onAlarmFired: () => {},
+  appLaunch: async () => ({ ok: true }), // 预览模式假装成功
   scanBigFiles: async () => ([
     { name: 'Xcode-15.2.dmg', path: '/Users/demo/Downloads/Xcode-15.2.dmg', size: 7.8e9, lastUsed: '2025-08-02', level: 'yellow' },
     { name: 'final-cut.mp4', path: '/Users/demo/Movies/final-cut.mp4', size: 3.1e9, lastUsed: '2025-09-01', level: 'yellow' },
@@ -192,7 +215,7 @@ const pad2 = (n) => String(n).padStart(2, '0');
 const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather', 'autoClean', 'ai', 'onboarding'];
 let settings = {
   general: { autoOpen: false },
-  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null },
+  appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null, material: 'glass' },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
   notify: { style: 'both' },
@@ -384,6 +407,8 @@ function renderSettings() {
   if (seg) [...seg.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === ap.size));
   const segT = el('segTheme');
   if (segT) [...segT.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === ap.theme));
+  const segM = el('segMaterial');
+  if (segM) [...segM.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === (ap.material || 'glass')));
   if (el('opacityVal')) el('opacityVal').textContent = `${Math.round(ap.opacity * 100)}%`;
   if (el('rngOpacity')) el('rngOpacity').value = String(Math.round(ap.opacity * 100));
   set('swOnTop', ap.onTop);
@@ -445,7 +470,7 @@ function renderSettings() {
   const n = [h.sit, h.water, h.eye].filter(Boolean).length;
   const briefs = {
     general: `自启 ${settingsMeta.loginItem ? '开' : '关'}`,
-    appearance: `${themeLabel} · ${sizeLabel} · ${Math.round(ap.opacity * 100)}%`,
+    appearance: `${themeLabel} · ${sizeLabel} · ${(ap.material === 'solid' ? '实心' : '玻璃')} · ${Math.round(ap.opacity * 100)}%`,
     notify: `报时 ${settings.chime.enabled ? '开' : '关'} · 健康 ${h.enabled ? n + ' 项' : '关'} · ${notifyStyleLabel()}`,
     stealth: settings.stealth.enabled ? `${apps.length} 个` : '关',
     clipboard: settings.clipboard.enabled ? `开 · ${settings.clipboard.limit} 条${settings.clipboard.filterPassword ? ' · 过滤' : ''}` : '关',
@@ -535,7 +560,10 @@ function bindSwitch(id, path, after) {
 }
 
 // ============ 情绪状态机 ============
-const STATES = ['idle', 'happy', 'curious', 'sleepy', 'surprised', 'thinking'];
+const STATES = ['idle', 'happy', 'curious', 'sleepy', 'surprised', 'thinking', 'yawn', 'stretch'];
+// AUTOTEST 钩子：把状态机暴露给主进程自检（e2e 断言用，不影响正常逻辑）
+window.__mioStates = STATES;
+window.__mioSetState = (next, tempMs) => setState(next, tempMs);
 let state = 'idle';
 let tempTimer = null;
 let lastInteract = Date.now();
@@ -553,6 +581,8 @@ function setState(next, tempMs = 0) {
 
 function interact() {
   lastInteract = Date.now();
+  yawned = false;
+  stretched = false;
   if (state === 'sleepy') setState('idle');
 }
 
@@ -569,10 +599,22 @@ function blinkLoop() {
 }
 blinkLoop();
 
-// ============ 生命感：困倦 ============
+// ============ 生命感：困倦 + 打哈欠/伸懒腰 ============
+let yawned = false;   // 本轮空闲是否已打过哈欠
+let stretched = false; // 本轮空闲是否已伸过懒腰
 setInterval(() => {
   if (settings.appearance.reduceMotion) return; // 减弱动效时不做打瞌睡演出
   const idleMs = Date.now() - lastInteract;
+  // 空闲 1~3 分钟：先伸懒腰，再打哈欠（各一次），营造「困了」的渐进感
+  if (state === 'idle' && idleMs > 60 * 1000 && idleMs < 5 * 60 * 1000) {
+    if (!stretched && idleMs > 65 * 1000 && Math.random() < 0.25) {
+      stretched = true;
+      setState('stretch', 1800);
+    } else if (!yawned && idleMs > 120 * 1000 && Math.random() < 0.3) {
+      yawned = true;
+      setState('yawn', 2600);
+    }
+  }
   if (idleMs > 5 * 60 * 1000 && state === 'idle') setState('sleepy');
   if (state === 'sleepy' && Math.random() < 0.3) {
     mioEl.classList.add('mio--nod');
@@ -1167,6 +1209,26 @@ async function pollStatus() {
     document.getElementById('netSsid').textContent = s.netDetail.ssid || '—';
     document.getElementById('netConns').textContent = s.netDetail.conns;
   }
+  // v1.9：Mio 自身占用
+  if (s.mio) {
+    const m = s.mio;
+    const cpuPct = (m.cpu == null) ? null : Math.min(100, Math.round(m.cpu));
+    setBar('barMioCpu', cpuPct == null ? 0 : cpuPct);
+    document.getElementById('valMioCpu').textContent = cpuPct == null ? '采样中' : cpuPct + '%';
+    const memBytes = (m.rss || 0);
+    const memMB = Math.round(memBytes / 1024 / 1024);
+    const sysTotal = (s.memDetail && s.memDetail.total) || 0;
+    setBar('barMioMem', sysTotal ? Math.min(100, Math.round(memBytes / sysTotal * 100)) : 0);
+    document.getElementById('valMioMem').textContent = memMB + ' MB';
+    // 省电徽章：CPU ≤2% 且内存 ≤300MB → 很省；否则给出数值
+    const badge = document.getElementById('mioSelfBadge');
+    if (cpuPct != null && cpuPct <= 2 && memMB <= 300) badge.textContent = '很省';
+    else if (cpuPct != null && cpuPct > 15) badge.textContent = '偏高';
+    else badge.textContent = '正常';
+    document.getElementById('mioSelfNote').textContent =
+      `主进程 + 渲染进程合计 · 空闲时几乎不耗 CPU` +
+      (m.renderer ? `（渲染 ${Math.round(m.renderer / 1024 / 1024)} MB）` : '');
+  }
   // S4：进程 Top10
   lastTop = s.top || [];
   renderProcs();
@@ -1693,6 +1755,9 @@ document.getElementById('pomodoroCard').addEventListener('click', () => {
       renderPomo();
       if (pomoLeft <= 0) {
         if (pomoPhase === 'work') {
+          // v1.9：完成一个工作阶段，上报主进程持久化（统计 + 周报）
+          const doneWork = Math.round(workSeconds() / 60);
+          if (api.pomoLog) api.pomoLog(doneWork).then(() => refreshPomoStats());
           pomoPhase = 'rest';
           pomoLeft = POMO_REST;
           // 番茄钟自身阶段切换通知不受专注抑制（FOCUS-1），照常发
@@ -1709,20 +1774,142 @@ document.getElementById('pomodoroCard').addEventListener('click', () => {
   }
   renderPomo();
 });
+
+// ============ v1.9：番茄钟统计与周报 ============
+// 每完成一个工作阶段上报主进程；这里拉取聚合快照渲染卡片
+async function refreshPomoStats() {
+  if (!api.pomoStats) return;
+  try {
+    const s = await api.pomoStats();
+    const brief = document.getElementById('pomoStatBrief');
+    if (brief) brief.textContent = s.total.count
+      ? `本周 ${s.week.count} 个 · ${s.week.mins} 分钟`
+      : '还没有完成的番茄钟';
+    const hint = document.getElementById('pomoStatHint');
+    if (hint) hint.textContent = s.total.count ? `累计 ${s.total.count} 个` : '本周';
+    if (document.getElementById('pomoToday')) document.getElementById('pomoToday').textContent = `${s.today.count} 个 · ${s.today.mins} 分钟`;
+    if (document.getElementById('pomoWeek')) document.getElementById('pomoWeek').textContent = `${s.week.count} 个 · ${s.week.mins} 分钟`;
+    if (document.getElementById('pomoTotal')) document.getElementById('pomoTotal').textContent = `${s.total.count} 个 · ${s.total.mins} 分钟`;
+    if (document.getElementById('pomoReport')) document.getElementById('pomoReport').textContent = s.report;
+    renderPomoBars(s.daily);
+  } catch {}
+}
+function renderPomoBars(daily) {
+  const box = document.getElementById('pomoBars');
+  if (!box) return;
+  const max = Math.max(1, ...(daily || []).map((d) => d.count));
+  box.innerHTML = (daily || []).map((d) => `
+    <div style="display:flex;align-items:center;gap:6px;margin:2px 0">
+      <span style="width:30px;font-size:10px;color:var(--mi-tx3);flex-shrink:0">${d.label}</span>
+      <div class="bar"><div class="bar-fill" style="width:${Math.round(d.count / max * 100)}%"></div></div>
+      <span style="width:40px;font-size:10px;color:var(--mi-accent);text-align:right;flex-shrink:0">${d.count} 个</span>
+    </div>`).join('');
+}
+refreshPomoStats();
+// 展开统计卡时刷新一次（保证数据最新）
+const pomoStatCard = document.getElementById('pomoStatCard');
+if (pomoStatCard) pomoStatCard.addEventListener('click', () => { setTimeout(refreshPomoStats, 50); });
 renderPomo();
 
-// ============ 快捷提醒 ============
+// ============ v1.9：真正的闹钟 / 倒计时（主进程持久化）============
+// 替代旧的 renderer setTimeout 快捷提醒：倒计时由主进程用绝对时间戳驱动，
+// 收起面板/重启都不丢不漂移；到点主进程发系统通知并广播回来弹气泡。
+let alarmTimerUI = null;
+let alarmRemaining = 0; // 秒
+const alarmInfoEl = () => document.getElementById('alarmInfo');
+const alarmDotEl = () => document.getElementById('alarmDot');
+const alarmCancelBtnEl = () => document.getElementById('alarmCancelBtn');
+
+function fmtAlarm(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+function alarmText(st) {
+  return st.label ? `倒计时中 · ${fmtAlarm(st.remaining)} · ${st.label}` : `倒计时中 · ${fmtAlarm(st.remaining)}`;
+}
+function renderAlarmUI(s) {
+  const info = alarmInfoEl(), dot = alarmDotEl(), cancel = alarmCancelBtnEl();
+  if (!info) return;
+  if (s && s.running) {
+    alarmRemaining = s.remaining;
+    info.textContent = alarmText(s);
+    if (dot) dot.classList.add('on');
+    if (cancel) cancel.hidden = false;
+    if (!alarmTimerUI) alarmTimerUI = setInterval(async () => {
+      const st = await api.alarmState().catch(() => null);
+      if (!st || !st.running) { refreshAlarm(); return; }
+      alarmRemaining = st.remaining;
+      const el = document.getElementById('alarmInfo');
+      if (el) el.textContent = alarmText(st);
+    }, 1000);
+  } else {
+    alarmRemaining = 0;
+    if (alarmTimerUI) { clearInterval(alarmTimerUI); alarmTimerUI = null; }
+    if (dot) dot.classList.remove('on');
+    if (cancel) cancel.hidden = true;
+    info.textContent = '点击档位或输入分钟开始倒计时，收起面板/重启也不丢';
+  }
+}
+async function refreshAlarm() {
+  if (!api.alarmState) return;
+  const st = await api.alarmState().catch(() => null);
+  renderAlarmUI(st);
+}
+function startAlarm(min) {
+  interact();
+  const mins = Math.max(1, Math.round(Number(min) || 25));
+  if (api.alarmStart) {
+    api.alarmStart(mins, '').then((s) => renderAlarmUI(s));
+    say(`好的，${mins} 分钟后叫你`, 2600);
+  } else {
+    // 浏览器预览降级：内存倒计时
+    alarmRemaining = mins * 60;
+    const el = document.getElementById('alarmInfo');
+    if (el) el.textContent = `倒计时中 · ${fmtAlarm(alarmRemaining)}（预览）`;
+    if (alarmCancelBtnEl()) alarmCancelBtnEl().hidden = false;
+    say(`好的，${mins} 分钟后叫你`, 2600);
+  }
+}
+function cancelAlarm() {
+  interact();
+  if (api.alarmCancel) api.alarmCancel().then(() => renderAlarmUI(null));
+  else renderAlarmUI(null);
+}
 document.querySelectorAll('.btn.reminder').forEach((btn) => {
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', () => startAlarm(Number(btn.dataset.min)));
+});
+const alarmStartBtn = document.getElementById('alarmStartBtn');
+if (alarmStartBtn) alarmStartBtn.addEventListener('click', () => {
+  const inp = document.getElementById('alarmMin');
+  startAlarm(Number(inp && inp.value) || 25);
+});
+const alarmCancelBtn = document.getElementById('alarmCancelBtn');
+if (alarmCancelBtn) alarmCancelBtn.addEventListener('click', cancelAlarm);
+// 到点：主进程广播回来 → 气泡 + 表情
+if (api.onAlarmFired) api.onAlarmFired(({ title, body }) => {
+  if (dndActive()) return; // 专注/免打扰期到点不吵
+  notifyUser(title, body, { sayText: '时间到啦！', ms: 4000 });
+  setState('surprised', 2000);
+  refreshAlarm();
+});
+refreshAlarm(); // 启动时恢复进行中的倒计时（重启不丢）
+
+// ============ v1.9：快捷启动 App ============
+// 点击用主进程 `open -a <AppName>` 启动；未安装/启动失败弹气泡提示。
+document.querySelectorAll('.btn.launch').forEach((btn) => {
+  btn.addEventListener('click', async () => {
     interact();
-    const min = Number(btn.dataset.min);
-    document.getElementById('reminderInfo').textContent = `已设定：${min} 分钟后提醒`;
-    say(`好的，${min} 分钟后叫你`);
-    setTimeout(() => {
-      if (dndActive()) return; // v1.6：专注/免打扰期内到点的快捷提醒直接跳过
-      notifyUser('Mio · 提醒', `${min} 分钟到了！`, { sayText: '时间到啦！', ms: 4000 });
-      setState('surprised', 2000);
-    }, min * 60 * 1000);
+    const name = btn.dataset.app;
+    if (!api.appLaunch) { say(`预览模式，无法启动 ${name}`, 2600); return; }
+    const r = await api.appLaunch(name).catch(() => ({ ok: false }));
+    const info = document.getElementById('launchInfo');
+    if (r && r.ok) {
+      if (info) info.textContent = `已启动 ${name}`;
+      say(`帮你打开 ${name} 啦`, 2600);
+    } else {
+      if (info) info.textContent = `${name} 未找到，可能未安装`;
+      say(`${name} 好像没装哦`, 3000);
+    }
   });
 });
 
@@ -1786,6 +1973,8 @@ function applyAppearance() {
   const size = ORB_ZOOM[a.size] ? a.size : 'md';
   document.body.classList.toggle('reduce-motion', !!a.reduceMotion);
   applyTheme();
+  // 球体材质：glass（液态玻璃，默认）/ solid（实心球 + 纯色面板）
+  document.body.classList.toggle('mio--solid', a.material === 'solid');
   // 球体等比缩放：zoom 会真实改变布局占位，flex 里不会错位
   mioEl.style.zoom = String(ORB_ZOOM[size]);
   gazeEnabled = !!a.gaze;
@@ -1873,6 +2062,7 @@ bindSwitch('swClickThrough', ['appearance', 'clickThrough'], applyAppearance);
 bindSwitch('swReduceMotion', ['appearance', 'reduceMotion'], applyAppearance);
 bindSeg('segSize', ['appearance', 'size']);
 bindSeg('segTheme', ['appearance', 'theme']);
+bindSeg('segMaterial', ['appearance', 'material']);
 bindRange('rngOpacity', ['appearance', 'opacity'],
   (v) => { const n = document.getElementById('opacityVal'); if (n) n.textContent = `${v}%`; },
   null, pctToUnit(0.3, 1));

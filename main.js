@@ -12,6 +12,8 @@ const {
 } = require('./main/core/settings.js');
 const { stateFile, loadState, saveState } = require('./main/core/state.js');
 const { execP, runCmd, fetchJson, dirSize } = require('./main/core/exec.js');
+const { pomoFile, loadPomo, logPomo, pomoStats } = require('./main/core/pomo.js');
+const alarm = require('./main/core/alarm.js'); // v1.9 真正的闹钟/倒计时（主进程持久化）
 const { LLM_PRESETS, LLM_PRICING, KEYCHAIN_SERVICE } = require('./main/llm/presets.js');
 const { WX_CODES, RAIN_CODES, SNOW_CODES } = require('./main/weather/codes.js');
 const { HOME, SCAN_TARGETS, isBlacklistedPath } = require('./main/clean/targets.js');
@@ -28,6 +30,7 @@ const cleanHistoryFile = path.join(app.getPath('userData'), 'mio-clean-history.j
 let win = null;
 let cursorTimer = null;
 let samplerTimer = null;
+let alarmTimer = null; // v1.9 倒计时 tick
 
 // ============ v1.5：设置中心 ============
 // settings 自 v1.5 起带版本号（_v）。升级靠 deepMerge 而非逐版 migration 函数：
@@ -377,7 +380,7 @@ function topProcesses() {
   }
 }
 
-// v1.2 S4：结束进程（仅 SIGTERM + 系统进程黑名单 + PID 下限）
+// ============ v1.2 S4：结束进程（仅 SIGTERM + 系统进程黑名单 + PID 下限）============
 ipcMain.handle('kill-process', (_e, payload) => {
   const pid = Number(payload && payload.pid);
   const name = String((payload && payload.name) || '').toLowerCase();
@@ -395,6 +398,40 @@ ipcMain.handle('kill-process', (_e, payload) => {
     return { ok: false, error: String(err && err.message || err) };
   }
 });
+
+// ============ v1.9：Mio 自身资源占用 ============
+// 主进程 RSS（process.memoryUsage 可靠）+ 渲染进程 RSS（webContents 的 OS pid 经 ps 查，真实）。
+// CPU 用 process.cpuUsage 两次采样差值 / 间隔；首次调用无基准 cpu 为 0（渲染层显示越低越好）。
+let lastSelfCpu = null; // { t, user, system }
+async function mioSelfUsage() {
+  const mem = process.memoryUsage();
+  const mainRss = mem.rss || 0;
+  let rendererRss = null;
+  try {
+    if (win && !win.isDestroyed()) {
+      const rpid = win.webContents.getOSProcessId();
+      if (rpid) {
+        const out = execSync(`/bin/ps -o rss= -p ${rpid}`, { timeout: 2000 }).toString().trim();
+        const kb = Number(out);
+        if (kb > 0) rendererRss = kb * 1024; // 字节
+      }
+    }
+  } catch { rendererRss = null; }
+  const rss = mainRss + (rendererRss || 0); // 主进程 + 渲染进程
+  const heap = mem.heapUsed || 0;
+
+  // CPU：主进程 user+system 微秒，相对上一次采样的增量 / 流逝秒 → %
+  let cpu = 0;
+  const cu = process.cpuUsage();
+  if (lastSelfCpu && lastSelfCpu.t) {
+    const dt = (Date.now() - lastSelfCpu.t) / 1000; // 秒
+    const du = (cu.user - lastSelfCpu.user) + (cu.system - lastSelfCpu.system); // 微秒
+    if (dt > 0.05) cpu = Math.min(100, Math.round((du / 1e6 / dt) * 100));
+  }
+  lastSelfCpu = { t: Date.now(), user: cu.user, system: cu.system };
+
+  return { cpu, rss, heap, renderer: rendererRss };
+}
 
 // macOS 的 os.freemem() 把缓存也算作占用，常年显示 99%，
 // 改用 vm_stat 的 active + wired + compressor 口径，贴近活动监视器
@@ -533,7 +570,7 @@ function batteryHealth() {
   return data;
 }
 
-ipcMain.handle('system-full', () => {
+ipcMain.handle('system-full', async () => {
   const cpus = os.cpus();
   const load = os.loadavg()[0] / cpus.length;
   const md = memDetail();
@@ -549,6 +586,7 @@ ipcMain.handle('system-full', () => {
     batteryHealth: batteryHealth(), // v1.4 D：无电池时为 null，渲染层整行隐藏
     io: ioCache,        // v1.7：磁盘 IO 小指标（后台 15s 采样，可能为 null 直到首次采样落地）
     top: topProcesses(), // v1.2 S4：Top10 + pid
+    mio: await mioSelfUsage(), // v1.9：Mio 自身 CPU/内存占用
   };
 });
 
@@ -634,6 +672,37 @@ ipcMain.handle('messages-clear', () => {
 });
 // 渲染层自身产生的事件（建议出现、清理完成等）也汇入消息中心
 ipcMain.on('message-log', (_e, { title, body }) => logMessage(title, body));
+
+// ============ v1.9：番茄钟统计与周报 ============
+// 渲染层每完成一个「工作阶段」上报一次；主进程持久化 + 聚合，供统计面板展示。
+ipcMain.handle('pomo-log', (_e, work) => logPomo(work));
+ipcMain.handle('pomo-stats', () => pomoStats());
+
+// ============ v1.9：真正的闹钟 / 倒计时 ============
+// 主进程持久化倒计时（绝对时间戳），renderer 收起/重启都不丢不漂移。
+// 到点由主进程发系统通知 + 广播给渲染层弹气泡 + 声音。
+ipcMain.handle('alarm-start', (_e, minutes, label) => alarm.start(minutes, label));
+ipcMain.handle('alarm-cancel', () => alarm.cancel());
+ipcMain.handle('alarm-state', () => alarm.state());
+alarm.onFire((a) => {
+  const title = 'Mio · 倒计时到啦';
+  const body = a.label ? `${a.label}（${Math.round(a.minutes)} 分钟）时间到！` : `${Math.round(a.minutes)} 分钟到了！`;
+  logMessage(title, body);
+  new Notification({ title, body, silent: false }).show();
+  if (win && !win.isDestroyed()) {
+    try { win.webContents.send('alarm-fired', { title, body }); } catch {}
+  }
+});
+
+// ============ v1.9：快捷启动 App ============
+// 用 `open -a <AppName>` 启动常用 App（macOS 标准方式，按名字匹配 /Applications）。
+// 启动失败（未安装/名字不对）返回 ok:false，渲染层弹气泡提示。
+ipcMain.handle('app-launch', async (_e, name) => {
+  const appName = String(name || '').trim();
+  if (!appName) return { ok: false, error: 'empty' };
+  const r = await runCmd('open', ['-a', appName], 8000);
+  return { ok: r.ok, error: r.ok ? null : (r.stderr || r.err?.message || 'not-found') };
+});
 
 // ============ 系统清理：只读扫描 + 确认后移入废纸篓 ============
 
@@ -2353,6 +2422,9 @@ app.whenReady().then(() => {
   sampleOnce();
   samplerTimer = setInterval(sampleOnce, 30000);
 
+  // v1.9：真正的闹钟/倒计时 —— 主进程 1s tick，到点触发（持久化保证重启不丢）
+  alarmTimer = setInterval(() => alarm.tick(), 1000);
+
   // 自动化自检模式：MIO_AUTOTEST=1 时走查核心交互并截图留证
   if (process.env.MIO_AUTOTEST === '1') {
     const shotsDir = path.join(__dirname, 'docs', 'shots');
@@ -3022,6 +3094,155 @@ app.whenReady().then(() => {
         })`));
         await shot('electron-v18-settings.png');
 
+        // ===== v1.9 断言：番茄钟统计与周报（IPC 写/读 + 渲染层卡片）=====
+        const pomoBefore = pomoStats();
+        // 真实记一个番茄（25 分钟），验证计数 +1、卡片渲染
+        await js(`window.mio.pomoLog(25)`);
+        await sleep(300);
+        const pomoAfter = pomoStats();
+        log('V19_POMO_STATS: ' + JSON.stringify({
+          totalInc: pomoAfter.total.count === pomoBefore.total.count + 1,
+          minsInc: pomoAfter.total.mins === pomoBefore.total.mins + 25,
+          todayInc: pomoAfter.today.count === pomoBefore.today.count + 1,
+          daily7: pomoAfter.daily.length === 7,
+          reportStr: typeof pomoAfter.report === 'string' && pomoAfter.report.length > 0,
+        }));
+        // 渲染层：统计卡 + 分布条 + 周报文案
+        await js(`document.querySelector('[data-tab="home"]').click()`);
+        await sleep(400);
+        log('V19_POMO_UI: ' + await js(`JSON.stringify({
+          card: !!document.getElementById('pomoStatCard'),
+          brief: !!document.getElementById('pomoStatBrief'),
+          bars: !!document.getElementById('pomoBars'),
+          today: (document.getElementById('pomoToday')||{}).textContent || null,
+          report: (document.getElementById('pomoReport')||{}).textContent || null,
+        })`));
+
+        // ===== v1.9 断言：真正的闹钟/倒计时（主进程持久化 + 渲染层 UI）=====
+        // 启动一个 0.1 分钟 ≈ 6 秒的倒计时，验证 IPC 写/读、UI 出现，然后取消清理
+        await js(`window.mio.alarmStart(0.1, '自检倒计时')`);
+        await sleep(300);
+        const aState = alarm.state();
+        log('V20_ALARM_START: ' + JSON.stringify({
+          running: aState.running === true,
+          remaining: aState.remaining > 0 && aState.remaining <= 10,
+          minutes: aState.minutes === 0.1,
+          label: aState.label === '自检倒计时',
+        }));
+        // 渲染层：倒计时卡片 + 输入框 + 档位按钮 + 状态区
+        await js(`document.querySelector('[data-tab="home"]').click()`);
+        await sleep(400);
+        log('V20_ALARM_UI: ' + await js(`JSON.stringify({
+          info: !!document.getElementById('alarmInfo'),
+          input: !!document.getElementById('alarmMin'),
+          startBtn: !!document.getElementById('alarmStartBtn'),
+          cancelBtn: !!document.getElementById('alarmCancelBtn'),
+          presets: document.querySelectorAll('.btn.reminder').length,
+        })`));
+        // 取消后应回到空闲态
+        await js(`window.mio.alarmCancel()`);
+        await sleep(300);
+        log('V20_ALARM_CANCEL: ' + JSON.stringify({ cleared: alarm.state().running === false }));
+
+        // ===== v1.9 断言：快捷启动 App =====
+        // 空名必须被拒；渲染层 8 个快捷按钮存在；IPC 链路通（用不存在的 app 验证失败分支）
+        const launchEmpty = await js(`window.mio.appLaunch('')`);
+        const launchGhost = await js(`window.mio.appLaunch('__mio_no_such_app__')`);
+        log('V21_LAUNCH: ' + JSON.stringify({
+          emptyRejected: launchEmpty && launchEmpty.ok === false,
+          ghostRejected: launchGhost && launchGhost.ok === false,
+        }));
+        log('V21_LAUNCH_UI: ' + await js(`JSON.stringify({
+          grid: !!document.getElementById('launchGrid'),
+          btns: document.querySelectorAll('.btn.launch').length,
+          info: !!document.getElementById('launchInfo'),
+        })`));
+
+        // ===== v1.9 断言：新表情（打哈欠 / 伸懒腰）=====
+        // CSS 关键帧存在 + STATES 纳入新状态 + setState 能切到 yawn/stretch 并落 class
+        const cssTxt = await js(`(() => {
+          const s = '';
+          for (const sheet of document.styleSheets) {
+            try { for (const r of sheet.cssRules) if (r.name === 'stretchUp') return 'stretchUp'; } catch (e) {}
+          }
+          return s;
+        })()`);
+        const statesArr = await js(`JSON.stringify(window.__mioStates || null)`);
+        await js(`window.__mioSetState && window.__mioSetState('yawn', 0)`);
+        await sleep(200);
+        const yawnCls = await js(`document.getElementById('mio').className`);
+        await js(`window.__mioSetState && window.__mioSetState('stretch', 0)`);
+        await sleep(200);
+        const stretchCls = await js(`document.getElementById('mio').className`);
+        await js(`window.__mioSetState && window.__mioSetState('idle', 0)`);
+        log('V22_EXPRESSIONS: ' + JSON.stringify({
+          keyframes: cssTxt === 'stretchUp',
+          states: (statesArr || '').includes('yawn') && (statesArr || '').includes('stretch'),
+          yawnClass: yawnCls.includes('mio--yawn'),
+          stretchClass: stretchCls.includes('mio--stretch'),
+        }));
+
+        // ===== v1.9 断言：Mio 自身资源占用 =====
+        // system-full 返回 mio{ cpu, rss, renderer }；状态页卡片元素存在且能渲染数值
+        const mSelf = await js(`window.mio.getFullStats().then(s => JSON.stringify(s.mio || null))`);
+        const mSelfObj = JSON.parse(mSelf || 'null');
+        await js(`document.querySelector('[data-tab="status"]').click()`);
+        await sleep(400);
+        const mSelfUi = await js(`JSON.stringify({
+          card: !!document.getElementById('mioSelfCard'),
+          cpuVal: document.getElementById('valMioCpu') ? document.getElementById('valMioCpu').textContent : null,
+          memVal: document.getElementById('valMioMem') ? document.getElementById('valMioMem').textContent : null,
+          badge: document.getElementById('mioSelfBadge') ? document.getElementById('mioSelfBadge').textContent : null,
+        })`);
+        const mSelfUiObj = JSON.parse(mSelfUi);
+        log('V23_MIO_SELF: ' + JSON.stringify({
+          hasCpu: mSelfObj && typeof mSelfObj.cpu === 'number' && mSelfObj.cpu >= 0,
+          hasRss: mSelfObj && typeof mSelfObj.rss === 'number' && mSelfObj.rss > 0,
+          hasRenderer: mSelfObj && (mSelfObj.renderer === null || (typeof mSelfObj.renderer === 'number' && mSelfObj.renderer >= 0)),
+          uiCard: mSelfUiObj.card === true,
+          uiCpu: /%|采样中/.test(mSelfUiObj.cpuVal || ''),
+          uiMem: /MB/.test(mSelfUiObj.memVal || ''),
+          uiBadge: ['很省', '正常', '偏高'].includes(mSelfUiObj.badge),
+        }));
+
+        // ===== v1.9 回归断言：液态玻璃质感在状态覆盖层中保持完整 =====
+        // .orb 的玻璃高光关键 = 顶部内高光 inset 0 10px；working/hot/stretch 三个覆盖规则
+        // 若覆盖时丢失该层，球体会在对应状态下「玻璃感失效」（变实心）。此处逐规则校验。
+        const glassCss = await js(`(() => {
+          const out = { sheets: [], hits: [] };
+          for (let si = 0; si < document.styleSheets.length; si++) {
+            const sheet = document.styleSheets[si];
+            let rs = [];
+            try { rs = sheet.cssRules; } catch (e) { out.sheets.push('ERR:' + si); continue; }
+            out.sheets.push(si + ':' + rs.length);
+            for (const r of rs) {
+              const sel = r.selectorText || '';
+              if (/(mio--working|mio--hot|mio--stretch)/.test(sel)) {
+                out.hits.push({ si, sel, css: (r.style && r.style.cssText) || '' });
+              }
+            }
+          }
+          return JSON.stringify(out);
+        })()`);
+        // 浏览器把 box-shadow 序列化为「颜色在前、inset 在后」，如 rgba(133,183,235,0.1) 0px 10px 22px inset
+        const glassObj = JSON.parse(glassCss || '{"sheets":[],"hits":[]}');
+        const hits = glassObj.hits || [];
+        const hasTopGlow = (css) => /0px\s+10px\s+22px\s+inset/.test(css);
+        // 只校验「.orb」规则（其他如 .eye/.pupil 无玻璃高光），且任一命中即判 true
+        const glassMap = {};
+        for (const g of hits) {
+          if (!/\.orb\s*$/.test(g.sel)) continue;
+          if (/mio--working/.test(g.sel) && hasTopGlow(g.css)) glassMap.working = true;
+          if (/mio--hot/.test(g.sel) && hasTopGlow(g.css)) glassMap.hot = true;
+          if (/mio--stretch/.test(g.sel) && hasTopGlow(g.css)) glassMap.stretch = true;
+        }
+        log('V24_GLASS: ' + JSON.stringify({
+          working: glassMap.working === true,
+          hot: glassMap.hot === true,
+          stretch: glassMap.stretch === true,
+          all: glassMap.working === true && glassMap.hot === true && glassMap.stretch === true,
+        }));
+
         log('AUTOTEST_DONE');
         setTimeout(() => app.quit(), 600); // 自检跑完自动退出，便于脚本化
       } catch (e) {
@@ -3038,6 +3259,7 @@ app.on('will-quit', () => {
   if (samplerTimer) clearInterval(samplerTimer);
   if (stealthTimer) clearInterval(stealthTimer);
   if (weatherTimer) clearInterval(weatherTimer);
+  if (alarmTimer) clearInterval(alarmTimer); // v1.9 倒计时 tick
   stopClip(); // v1.6：停轮询，内存里的剪贴板历史随进程一起消失
 });
 

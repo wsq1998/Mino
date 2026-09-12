@@ -118,6 +118,44 @@ body {
 .mio--sleepy .pupil { opacity: 0; }
 .mio--sleepy .orb { opacity: 0.88; }
 
+/* v1.9：打哈欠 —— 眼睛眯成缝 + 嘴巴张大 + 身体轻轻起伏 */
+.mio--yawn { animation: breathe 2.2s ease-in-out infinite; }
+.mio--yawn .eye {
+  height: 3px; top: 45%;
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(181, 212, 244, 0.6);
+}
+.mio--yawn .pupil { opacity: 0; }
+.mio--yawn .mouth {
+  opacity: 1;
+  width: 22px; height: 20px;
+  border: 2px solid #B5D4F4;
+  border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+  top: 30%; /* 嘴巴上移到脸部中上，模拟张嘴打哈欠 */
+  background: rgba(12, 68, 124, 0.35);
+  box-shadow: inset 0 0 8px rgba(12, 68, 124, 0.6);
+}
+
+/* v1.9：伸懒腰：眼睛用力眯成线 + 身体纵向拉伸 + 嘴巴小圆 */
+.mio--stretch { animation: stretchUp 1.4s ease-in-out; }
+.mio--stretch .eye {
+  height: 2px; width: 16px; top: 46%;
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(181, 212, 244, 0.6);
+}
+.mio--stretch .pupil { opacity: 0; }
+.mio--stretch .mouth {
+  width: 10px; height: 6px;
+  border-radius: 50%;
+}
+.mio--stretch .orb {
+  box-shadow:
+    inset 0 -16px 30px rgba(0, 0, 0, 0.5),
+    inset 0 10px 22px rgba(133, 183, 235, 0.10),
+    0 0 20px rgba(133, 183, 235, 0.3),
+    0 14px 30px rgba(0, 0, 0, 0.45);
+}
+
 .mio--surprised .eye { width: 22px; height: 22px; border-radius: 50%; top: 37%; }
 .mio--surprised .mouth {
   opacity: 1; width: 12px; height: 12px;
@@ -132,11 +170,12 @@ body {
 .mio--thinking .eye-r { animation-delay: 0.22s; }
 .mio--thinking .pupil { opacity: 0; }
 
-/* 番茄钟运行中：轮廓变绿 */
+/* 番茄钟运行中：轮廓变绿（保留玻璃顶部高光） */
 .mio--working .orb {
   border-color: rgba(29, 158, 117, 0.9);
   box-shadow:
     inset 0 -14px 28px rgba(0, 0, 0, 0.55),
+    inset 0 10px 22px rgba(29, 158, 117, 0.12),
     0 0 22px rgba(29, 158, 117, 0.35),
     0 14px 30px rgba(0, 0, 0, 0.45);
 }
@@ -371,6 +410,21 @@ body.theme-light .switch:hover i { border-color: rgba(17, 24, 39, 0.26); }
 .interactive-btn:hover { background: rgba(52, 55, 65, 0.85); }
 
 .reminder-row { display: flex; gap: 6px; margin-top: 8px; }
+.reminder-custom { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+.reminder-custom input[type="number"] {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--mi-tx1);
+  background: rgba(127, 127, 127, 0.12);
+  border: 0.5px solid rgba(127, 127, 127, 0.3);
+  border-radius: 8px;
+}
+.reminder-custom input[type="number"]:focus { outline: none; border-color: var(--mi-accent); }
+.reminder-custom .btn { flex: 0 0 auto; padding: 6px 12px; }
+.launch-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+.launch-grid .btn.launch { flex: 1; padding: 7px 0; font-size: 11px; }
 .btn {
   flex: 1;
   padding: 6px 0;
@@ -413,6 +467,14 @@ body.theme-light .switch:hover i { border-color: rgba(17, 24, 39, 0.26); }
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-4px); }
 }
+/* v1.9：伸懒腰 —— 纵向拉伸 + 轻微后仰回弹 */
+@keyframes stretchUp {
+  0% { transform: translateY(0) scaleY(1); }
+  30% { transform: translateY(-6px) scaleY(1.06); }
+  50% { transform: translateY(-9px) scaleY(1.09); }
+  70% { transform: translateY(-4px) scaleY(1.03); }
+  100% { transform: translateY(0) scaleY(1); }
+}
 @keyframes panelIn {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
@@ -448,6 +510,7 @@ body.theme-light .switch:hover i { border-color: rgba(17, 24, 39, 0.26); }
   border-color: rgba(216, 90, 48, 0.9);
   box-shadow:
     inset 0 -14px 28px rgba(0, 0, 0, 0.55),
+    inset 0 10px 22px rgba(216, 90, 48, 0.14),
     0 0 22px rgba(216, 90, 48, 0.4),
     0 14px 30px rgba(0, 0, 0, 0.45);
 }
@@ -1335,3 +1398,44 @@ body.reduce-motion *::after {
 .update-notice[hidden] { display: none; }
 .update-text { flex: 1; font-size: 11.5px; color: var(--mi-accent); }
 .update-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* ============ v1.9：实心质感（appearance.material = solid）============
+   液态玻璃是 Mio 的角色身份；「实心」是给想要「非玻璃感」用户的外观主题。
+   球体去掉半透明高光渐变与玻璃边框 → 纯色球面 + 实心辉光描边；
+   面板与气泡从毛玻璃 → 纯色不透明（仍留极淡描边保持轮廓） */
+body.mio--solid .orb {
+  background:
+    radial-gradient(circle at 32% 26%, rgba(255,255,255,0.06), rgba(255,255,255,0) 55%),
+    linear-gradient(160deg, #3A3D47 0%, #2E3039 55%, #23252C 100%);
+  border: 1.5px solid rgba(133, 183, 235, 0.9);
+  box-shadow:
+    inset 0 -8px 16px rgba(0, 0, 0, 0.6),
+    0 0 20px rgba(133, 183, 235, 0.3),
+    0 14px 28px rgba(0, 0, 0, 0.5);
+}
+body.mio--solid .highlight { opacity: 0.35; }
+body.mio--solid .panel,
+body.mio--solid .detail-view {
+  background: rgb(var(--mi-surface-rgb));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+body.mio--solid .bubble {
+  background: #26282F;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+body.mio--solid .panel.animating {
+  background: rgb(var(--mi-surface-rgb));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+body.mio--solid .confirm-box {
+  background: rgb(var(--mi-surface-rgb));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* 浅色下实心面板底色跟随浅色令牌 */
+body.mio--solid.theme-light .panel,
+body.mio--solid.theme-light .detail-view { background: rgb(var(--mi-surface-rgb)); }
+body.mio--solid.theme-light .bubble { background: #EDEDF0; color: #1B1D23; }

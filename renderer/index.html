@@ -56,13 +56,46 @@
         </div>
       </div>
       <div class="card">
-        <div class="label">快捷提醒</div>
+        <div class="label">倒计时 <span id="alarmDot" class="dot"></span></div>
         <div class="reminder-row">
+          <button class="btn reminder" data-min="5">5 分钟</button>
           <button class="btn reminder" data-min="10">10 分钟</button>
-          <button class="btn reminder" data-min="30">30 分钟</button>
+          <button class="btn reminder" data-min="25">25 分钟</button>
           <button class="btn reminder" data-min="60">1 小时</button>
         </div>
-        <div id="reminderInfo" class="sub">久坐提醒：每 45 分钟</div>
+        <div class="reminder-custom">
+          <input id="alarmMin" type="number" min="1" max="600" placeholder="自定义分钟" value="30">
+          <button class="btn" id="alarmStartBtn">开始</button>
+          <button class="btn danger" id="alarmCancelBtn" hidden>取消</button>
+        </div>
+        <div id="alarmInfo" class="sub">点击档位或输入分钟开始倒计时，收起面板/重启也不丢</div>
+      </div>
+      <!-- v1.9：快捷启动 App（点击用 open -a 启动） -->
+      <div class="card">
+        <div class="label">快捷启动</div>
+        <div class="launch-grid" id="launchGrid">
+          <button class="btn launch" data-app="Safari">Safari</button>
+          <button class="btn launch" data-app="Google Chrome">Chrome</button>
+          <button class="btn launch" data-app="微信">微信</button>
+          <button class="btn launch" data-app="QQ">QQ</button>
+          <button class="btn launch" data-app="访达">访达</button>
+          <button class="btn launch" data-app="终端">终端</button>
+          <button class="btn launch" data-app="Visual Studio Code">VS Code</button>
+          <button class="btn launch" data-app="邮件">邮件</button>
+        </div>
+        <div id="launchInfo" class="sub">点击启动常用 App（未安装的会提示）</div>
+      </div>
+      <!-- v1.9：番茄钟统计与周报（点击钻入详情） -->
+      <div class="card expandable interactive-btn" id="pomoStatCard" data-dv-title="番茄钟统计与周报">
+        <div class="label">番茄钟统计 <span class="expand-hint" id="pomoStatHint">本周</span></div>
+        <div id="pomoStatBrief" class="value small">—</div>
+        <div class="detail">
+          <div class="kv"><span>今日</span><span id="pomoToday">—</span></div>
+          <div class="kv"><span>本周</span><span id="pomoWeek">—</span></div>
+          <div class="kv"><span>累计</span><span id="pomoTotal">—</span></div>
+          <div class="sub" id="pomoReport" style="margin-top:4px">—</div>
+          <div id="pomoBars" style="margin-top:8px"></div>
+        </div>
       </div>
       <!-- v1.6 B2-1：剪贴板历史（点击钻入详情） -->
       <div class="card expandable interactive-btn" id="clipCard" data-dv-title="剪贴板历史">
@@ -155,6 +188,15 @@
           <div class="kv"><span>电源适配器</span><span id="bhWatt">—</span></div>
           <div class="sub" id="bhHint">—</div>
         </div>
+      </div>
+      <!-- v1.9：Mio 自身资源占用（桌宠到底吃多少） -->
+      <div class="card" id="mioSelfCard">
+        <div class="label">Mio 自身占用 <span class="safe-badge" id="mioSelfBadge">很省</span></div>
+        <div class="row">
+          <div class="metric"><span class="m-name">CPU</span><div class="bar"><div id="barMioCpu" class="bar-fill"></div></div><span id="valMioCpu" class="m-val">—</span></div>
+          <div class="metric"><span class="m-name">内存</span><div class="bar"><div id="barMioMem" class="bar-fill"></div></div><span id="valMioMem" class="m-val">—</span></div>
+        </div>
+        <div class="sub" id="mioSelfNote">主进程 + 渲染进程合计 · 空闲时几乎不耗 CPU</div>
       </div>
       <!-- S4：Top10 进程（排序切换 + 结束进程） -->
       <div class="card expandable interactive-btn" id="procCard" data-dv-title="占用的进程">
@@ -284,6 +326,11 @@
           <div class="set-row"><span>球体尺寸</span>
             <div class="seg" id="segSize">
               <button data-v="sm">小</button><button data-v="md">中</button><button data-v="lg">大</button>
+            </div>
+          </div>
+          <div class="set-row"><span>质感</span>
+            <div class="seg" id="segMaterial">
+              <button data-v="glass">液态玻璃</button><button data-v="solid">实心</button>
             </div>
           </div>
           <div class="set-row"><span>不透明度</span><span class="set-val" id="opacityVal">100%</span></div>

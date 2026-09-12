@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS = {
     clickThrough: true,   // 点击穿透（关闭后球体始终接收鼠标事件）
     reduceMotion: false,  // 减弱动效
     displayId: null,      // null = 跟随光标所在屏
+    material: 'glass',    // glass | solid —— 球体与面板质感：液态玻璃 / 实心（液态玻璃主题）
   },
   chime: { enabled: true, from: 9, to: 22, notify: false },
   health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
@@ -88,6 +89,8 @@ function deepMerge(base, patch) {
 
 function sanitizeSettings(s) {
   s.appearance.opacity = normUnit(s.appearance.opacity, 0.3, 1, 1);
+  s.appearance.material = ['glass', 'solid'].includes(s.appearance.material)
+    ? s.appearance.material : 'glass';
   s.stealth.opacity = normUnit(s.stealth.opacity, 0.05, 0.9, 0.12);
   // v1.7.5 autoClean：脏数据收口 —— lastRun 只许对象或 null，pausedUntil 只许未过期的正数毫秒或 null
   if (s.autoClean && typeof s.autoClean === 'object') {
