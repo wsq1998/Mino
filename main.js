@@ -3285,6 +3285,10 @@ app.on('will-quit', () => {
   stopClip(); // v1.6：停轮询，内存里的剪贴板历史随进程一起消失
 });
 
+// ============ v2.0 批次B：常用页核心功能装配 ============
+// 最小可验证步进：v2-ping 探活通道（渲染层 window.mio.v2.ping 调用）
+ipcMain.handle('v2-ping', () => ({ ok: true, pong: Date.now() }));
+
 // 桌宠不需要 dock 图标与多窗口
 app.dock?.hide();
 app.on('window-all-closed', () => app.quit());
