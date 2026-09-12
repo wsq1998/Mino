@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jackson/mio.git"
+    "url": "https://github.com/wsq1998/Mino.git"
   },
   "scripts": {
     "start": "electron . --no-sandbox",
