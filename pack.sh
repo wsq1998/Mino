@@ -24,8 +24,11 @@ mkdir -p dist
 ditto "$SRC" "$APP"
 
 # 3. 注入应用代码
+# B4-4：main.js 已拆出 main/ 子模块（core/llm/weather/clean/system），必须整目录注入，
+# 否则打包后 require('./main/...') 找不到模块，app 启动即崩。
 mkdir -p "$APP/Contents/Resources/app/renderer"
 cp main.js preload.js package.json "$APP/Contents/Resources/app/"
+cp -R main "$APP/Contents/Resources/app/main"
 cp renderer/index.html renderer/style.css renderer/app.js "$APP/Contents/Resources/app/renderer/"
 
 # 4. 元信息

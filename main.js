@@ -6,10 +6,20 @@ const os = require('os');
 const crypto = require('crypto'); // v1.7.5 查重：前 4KB 指纹 + 全量 sha256（Node 内置，零依赖）
 const { execSync, exec, execFile, execFileSync } = require('child_process');
 
+// ===== B4-4 模块拆分：从 main/ 子模块引入纯数据/纯函数层（零行为变化）=====
+const {
+  SETTINGS_VERSION, DEFAULT_SETTINGS, deepMerge, normUnit, clamp, sanitizeSettings,
+} = require('./main/core/settings.js');
+const { stateFile, loadState, saveState } = require('./main/core/state.js');
+const { execP, runCmd, fetchJson, dirSize } = require('./main/core/exec.js');
+const { LLM_PRESETS, LLM_PRICING, KEYCHAIN_SERVICE } = require('./main/llm/presets.js');
+const { WX_CODES, RAIN_CODES, SNOW_CODES } = require('./main/weather/codes.js');
+const { HOME, SCAN_TARGETS, isBlacklistedPath } = require('./main/clean/targets.js');
+const { PROC_BLACKLIST, STEALTH_APPS, DEEP_LINKS } = require('./main/system/constants.js');
+
 const WIN_W = 320;
 const WIN_W_WIDE = 440; // v1.2 详情档：面板 360px + 两侧边距
 const WIN_H = 560;
-const stateFile = path.join(app.getPath('userData'), 'mio-state.json');
 // v1.2 持久化文件（均位于 userData，上限可控）
 const historyFile = path.join(app.getPath('userData'), 'mio-history.json');      // S5 24h 采样
 const messagesFile = path.join(app.getPath('userData'), 'mio-messages.json');    // S6 消息中心
@@ -19,127 +29,12 @@ let win = null;
 let cursorTimer = null;
 let samplerTimer = null;
 
-function loadState() {
-  try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return {}; }
-}
-function saveState(patch) {
-  const next = { ...loadState(), ...patch };
-  try { fs.writeFileSync(stateFile, JSON.stringify(next)); } catch {}
-}
-
 // ============ v1.5：设置中心 ============
 // settings 自 v1.5 起带版本号（_v）。升级靠 deepMerge 而非逐版 migration 函数：
 // 默认值是「骨架」，用户配置叠上去，缺失字段自动补齐 —— v1.4 只有 chime/health/stealth
 // 三组，读进来就会自动长出 general/appearance 等新组，老配置文件零改动可用。
 // v1.6 再叠一层：clipboard/capture/hotkey/pomodoro/consent 五个新区，老键名一个不动。
 // v1.8 再叠一层：ai（LLM 聊天）+ onboarding 标记，老键名一个不动。
-const SETTINGS_VERSION = 6;
-
-const DEFAULT_SETTINGS = {
-  _v: 6,
-  general: { autoOpen: false },
-  appearance: {
-    theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
-    size: 'md',           // sm | md | lg
-    opacity: 1,           // 0.3 ~ 1
-    onTop: true,
-    gaze: true,           // 视线跟随
-    clickThrough: true,   // 点击穿透（关闭后球体始终接收鼠标事件）
-    reduceMotion: false,  // 减弱动效
-    displayId: null,      // null = 跟随光标所在屏
-  },
-  chime: { enabled: true, from: 9, to: 22, notify: false },
-  health: { enabled: true, sit: true, water: false, eye: false, quietFrom: 22, quietTo: 9 },
-  // v1.6 C9：通知方式默认「两者」，保持 v1.5「系统通知 + 气泡」的既有行为，
-  // 避免升级后默认通道变了让老用户以为提醒消失（PRD Q8）
-  notify: { style: 'both' }, // bubble | system | both
-  pomodoro: { work: 25 },    // v1.6 C10：25 | 45 | 60（分钟）
-  stealth: { enabled: true, opacity: 0.12, apps: null }, // apps=null → 用内置名单
-  // ===== v1.6 新增分组 =====
-  clipboard: { enabled: true, limit: 10, filterPassword: false }, // E1/E2/E3
-  capture: { mode: 'region', dest: 'clipboard' },                 // E4（dest 本版恒为剪贴板）
-  hotkey: { trigger: 'Alt+Space' },                                // D1（Electron accelerator 规范串）
-  consent: { permsIntroSeen: false },                              // 统一说明弹层「只弹一次」标志
-  // v1.7 F 组：天气。数据源 wttr.in（免 key，用户零配置 —— 决策见路线图 §9.1）
-  weather: {
-    enabled: true,
-    city: null,        // null = 自动（IP 定位到城市级，精度对「今天要不要带伞」够用）
-    interval: 60,      // 30 | 60 | 120 分钟
-    unit: 'c',         // c | f
-  },
-  // v1.7.5 定时清理计划（路线图 §6.4 六条决策）：只放行绿色梯队（缓存/日志）；
-  // 只在 Mio 启动时补跑（每天至多一次，错过顺延下次启动）；默认关闭；静默执行
-  autoClean: {
-    enabled: false,
-    pausedUntil: null, // 毫秒时间戳：暂停到该时刻（「暂停 7 天」温和档位；手动扫描不受影响）
-    lastRun: null,     // { t, freed, moved, items } —— 面板回溯「上次自动清理：时间/释放/清了什么」
-  },
-  // v1.8 G 组：AI 助手（LLM 聊天）。Key 永不落盘 —— 只存 macOS 钥匙串（service=mio-llm）。
-  ai: {
-    enabled: false,          // LLM-1：关 → 球体不出现对话入口、任何 IPC 不发请求
-    provider: 'deepseek',    // LLM-2：deepseek | zhipu | qwen | openai | custom
-    baseUrl: 'https://api.deepseek.com/v1', // LLM-4：随预设自动填，可改
-    model: 'deepseek-chat',  // LLM-4：随预设自动填，可改
-    monthlyCap: 0,           // LLM-7：每月花费上限（元，估算护栏；0 = 不限制）
-    maxTokens: 512,          // LLM-6：单次最大回复长度（64–2048，默认 512）
-    persona: `你是 Mio，一个住在用户 macOS 桌面上的小机器人伙伴。
-你说话简短、亲切、偶尔俏皮；你了解用户电脑的实时状态（CPU、内存、磁盘、天气）。
-你不知道的问题就老实说不知道，不编造。回答控制在 3-5 句以内。`, // LLM-8 默认人设
-  },
-  // v1.8 B4-2：首次启动引导标记。done=true 表示已引导过（老用户不弹）
-  onboarding: { done: false },
-};
-
-// 深合并：base 作骨架，patch 覆盖其上；数组整体替换（不逐项合并）
-function deepMerge(base, patch) {
-  const out = Array.isArray(base) ? base.slice() : { ...base };
-  if (!patch || typeof patch !== 'object') return out;
-  for (const k of Object.keys(patch)) {
-    const b = base ? base[k] : undefined;
-    const p = patch[k];
-    const bothPlain = p && b && typeof p === 'object' && typeof b === 'object'
-      && !Array.isArray(p) && !Array.isArray(b);
-    out[k] = bothPlain ? deepMerge(b, p) : (p === undefined ? out[k] : p);
-  }
-  return out;
-}
-
-// 不透明度的**唯一存储口径**是单位区间小数（appearance 0.3–1 / stealth 0.05–0.9），
-// 百分数只活在界面层（滑块 0–100）。v1.5 的滑块漏了这一次换算，把 100 直接存了进来，
-// 回显时再 ×100 就显示成 10000%。这里在合并之后统一收口，既兜住历史脏数据，
-// 也保证「就算某个入口忘了换算，落盘的永远是合法值」。
-function normUnit(v, lo, hi, fallback) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return fallback;
-  // > 1 只可能是百分数误存：100 → 1，10000 → 100 → 再夹到上界
-  return clamp(n > 1 ? n / 100 : n, lo, hi);
-}
-
-function sanitizeSettings(s) {
-  s.appearance.opacity = normUnit(s.appearance.opacity, 0.3, 1, 1);
-  s.stealth.opacity = normUnit(s.stealth.opacity, 0.05, 0.9, 0.12);
-  // v1.7.5 autoClean：脏数据收口 —— lastRun 只许对象或 null，pausedUntil 只许未过期的正数毫秒或 null
-  if (s.autoClean && typeof s.autoClean === 'object') {
-    s.autoClean.enabled = !!s.autoClean.enabled;
-    const pu = Number(s.autoClean.pausedUntil);
-    s.autoClean.pausedUntil = Number.isFinite(pu) && pu > Date.now() ? pu : null;
-    if (!s.autoClean.lastRun || typeof s.autoClean.lastRun !== 'object') s.autoClean.lastRun = null;
-  }
-  // v1.8 ai：脏数据收口 —— maxTokens 夹到 64–2048，monthlyCap 非负数字，persona 清空回退默认
-  if (s.ai && typeof s.ai === 'object') {
-    s.ai.enabled = !!s.ai.enabled;
-    const mt = Number(s.ai.maxTokens);
-    s.ai.maxTokens = Number.isFinite(mt) ? clamp(Math.round(mt), 64, 2048) : 512;
-    const cap = Number(s.ai.monthlyCap);
-    s.ai.monthlyCap = Number.isFinite(cap) && cap > 0 ? Math.round(cap) : 0;
-    s.ai.provider = ['deepseek', 'zhipu', 'qwen', 'openai', 'custom'].includes(s.ai.provider)
-      ? s.ai.provider : 'deepseek';
-    if (typeof s.ai.baseUrl !== 'string' || !s.ai.baseUrl.trim()) s.ai.baseUrl = DEFAULT_SETTINGS.ai.baseUrl;
-    if (typeof s.ai.model !== 'string' || !s.ai.model.trim()) s.ai.model = DEFAULT_SETTINGS.ai.model;
-    if (typeof s.ai.persona !== 'string' || !s.ai.persona.trim()) s.ai.persona = DEFAULT_SETTINGS.ai.persona;
-  }
-  return s;
-}
 
 function getSettings() {
   const st = loadState();
@@ -165,23 +60,6 @@ function patchSettings(patch) {
 // ============ v1.8 G 组：LLM 服务商预设 / 单价表 / 钥匙串 ============
 // 预设值硬编码于主进程（PRD §5.3 / §6.3）：渲染层只拿「选项名 + 选中值」，不落盘明文 Key。
 // 全部 OpenAI 兼容 /v1/chat/completions；Ollama 用户直接在「自定义」填 http://localhost:11434。
-const LLM_PRESETS = {
-  deepseek: { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-  zhipu:   { label: '智谱',     baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
-  qwen:    { label: '通义',     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
-  openai:  { label: 'OpenAI',   baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-  custom:  { label: '自定义',   baseUrl: '', model: '' },
-};
-// 单价表（元 / 千 token，估算口径）：仅三家预设 + OpenAI 有价；自定义按 0 估算（LLM-7 / Q4）
-const LLM_PRICING = {
-  deepseek: { in: 0.001, out: 0.002 },
-  zhipu:    { in: 0.001, out: 0.002 },
-  qwen:     { in: 0.001, out: 0.002 },
-  openai:   { in: 0.005, out: 0.015 },
-  custom:   { in: 0, out: 0 },
-};
-// 钥匙串条目：service=mio-llm，account=当前 macOS 用户名 —— 真 key 永不进 IPC 返回值
-const KEYCHAIN_SERVICE = 'mio-llm';
 const keychainAccount = () => os.userInfo().username || process.env.USER || 'mio';
 
 // security CLI 封装（macOS 原生，零第三方依赖）
@@ -221,7 +99,6 @@ function maskKey(key) {
 // 球体尺寸用 zoom 系数，基准 120px —— 表情各状态里写死了大量 px 尺寸，
 // 逐个改成 calc() 侵入太大，zoom 能整体等比缩放且仍然参与布局。
 const ORB_ZOOM = { sm: 0.8, md: 1, lg: 1.13 };
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 // 窗口级外观：透明度 / 置顶 / 所在显示器。尺寸与主题是纯渲染层的事，不在这里动。
 function applyAppearance(a) {
@@ -271,13 +148,6 @@ function defaultPosFor(display) {
 // 异步执行 shell 命令（扫描类重命令专用，防主进程阻塞）。
 // 无条件返回 stdout：du 等命令遇 TCC 保护目录会部分失败（exit 1），
 // 但 stdout 里已算出的有效行仍然可用，调用方按行解析并过滤空行，语义安全
-function execP(cmd, opts = {}) {
-  return new Promise((resolve) => {
-    exec(cmd, { timeout: opts.timeout || 15000, maxBuffer: 16 * 1024 * 1024 }, (_err, stdout) => {
-      resolve((stdout || '').toString());
-    });
-  });
-}
 
 function createWindow() {
   const saved = loadState();
@@ -508,11 +378,6 @@ function topProcesses() {
 }
 
 // v1.2 S4：结束进程（仅 SIGTERM + 系统进程黑名单 + PID 下限）
-const PROC_BLACKLIST = new Set([
-  'windowserver', 'loginwindow', 'kernel_task', 'launchd', 'cfprefsd',
-  'finder', 'dock', 'systemuiserver', 'spotlight', 'mds', 'distnoted',
-  'opendirectoryd', 'syslogd', 'configd', 'powerd', 'mio', 'electron',
-]);
 ipcMain.handle('kill-process', (_e, payload) => {
   const pid = Number(payload && payload.pid);
   const name = String((payload && payload.name) || '').toLowerCase();
@@ -771,45 +636,7 @@ ipcMain.handle('messages-clear', () => {
 ipcMain.on('message-log', (_e, { title, body }) => logMessage(title, body));
 
 // ============ 系统清理：只读扫描 + 确认后移入废纸篓 ============
-const HOME = os.homedir();
-const SCAN_TARGETS = [
-  { id: 'user-caches', name: '用户缓存', dir: path.join(HOME, 'Library/Caches'), level: 'green', note: '应用缓存，删除后自动重建' },
-  { id: 'user-logs', name: '用户日志', dir: path.join(HOME, 'Library/Logs'), level: 'green', note: '历史日志文件' },
-  { id: 'npm-cache', name: 'npm 缓存', dir: path.join(HOME, '.npm/_cacache'), level: 'green', note: '包下载缓存' },
-  { id: 'pip-cache', name: 'pip 缓存', dir: path.join(HOME, 'Library/Caches/pip'), level: 'green', note: '包下载缓存' },
-  { id: 'xcode-derived', name: 'Xcode DerivedData', dir: path.join(HOME, 'Library/Developer/Xcode/DerivedData'), level: 'green', note: '构建产物，可安全删除' },
-  { id: 'trash', name: '废纸篓', dir: path.join(HOME, '.Trash'), level: 'yellow', note: '清空后不可恢复' },
-];
 
-async function dirSize(dir, budgetMs = 8000) {
-  const start = Date.now();
-  let total = 0;
-  let count = 0;
-  async function walk(d) {
-    if (Date.now() - start > budgetMs) return;
-    let entries;
-    try {
-      entries = await fs.promises.readdir(d, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (Date.now() - start > budgetMs) return;
-      const p = path.join(d, e.name);
-      try {
-        if (e.isDirectory()) {
-          await walk(p);
-        } else if (e.isFile()) {
-          const st = await fs.promises.stat(p);
-          total += st.size;
-          count++;
-        }
-      } catch {}
-    }
-  }
-  await walk(dir);
-  return { size: total, files: count };
-}
 
 ipcMain.handle('clean-scan', async () => {
   const results = [];
@@ -892,22 +719,6 @@ async function executeCleanIds(ids, sizes = {}, targets = SCAN_TARGETS, historyT
 ipcMain.handle('clean-execute', (_e, ids, sizes = {}) => executeCleanIds(ids, sizes));
 
 // ============ 清理安全：路径黑名单（展示与执行共用）============
-function isBlacklistedPath(p) {
-  if (typeof p !== 'string' || !p) return true;
-  const norm = path.normalize(p);
-  // 系统级目录永不展示/清理
-  if (norm.startsWith('/System') || norm.startsWith('/usr') || norm === '/Library' || norm.startsWith('/Library/')) return true;
-  // 仅限用户目录
-  if (!norm.startsWith(HOME + path.sep)) return true;
-  const rel = norm.slice(HOME.length);
-  const badPrefixes = [
-    '/Library/Containers', '/Library/Group Containers', // 沙盒数据
-    '/Library/Keychains', '/Library/Mail',              // 钥匙串 / 邮件
-  ];
-  if (badPrefixes.some((b) => rel === b || rel.startsWith(b + path.sep))) return true;
-  if (rel.includes('Photos Library')) return true;      // 照片图库
-  return false;
-}
 
 // v1.2 C1/C2/C3/C4 统一执行入口：把用户勾选的具体路径移入废纸篓
 // entries: [{path, name?, size?}] 或 [path]
@@ -1175,20 +986,6 @@ ipcMain.on('quit', () => app.quit());
 // 改用「前台应用 bundleid 名单」近似，并配 ⌥H 手动兜底。UI 文案也如实叫「看视频/演示时自动隐身」。
 // v1.5：从纯 bundleid 数组升级为 {id,name}，名称由主进程提供，
 // 渲染层不必再维护一份中文映射，设置页也能直接展示/增删。
-const STEALTH_APPS = [
-  { id: 'com.colliderli.iina', name: 'IINA' },
-  { id: 'org.videolan.vlc', name: 'VLC' },
-  { id: 'com.apple.QuickTimePlayerX', name: 'QuickTime' },
-  { id: 'com.apple.TV', name: '视频' },
-  { id: 'com.apple.iWork.Keynote', name: 'Keynote' },
-  { id: 'com.microsoft.Powerpoint', name: 'PowerPoint' },
-  { id: 'com.kingsoft.wpsoffice.mac', name: 'WPS' },
-  { id: 'com.tencent.meeting', name: '腾讯会议' },
-  { id: 'com.tencent.tencentmeeting', name: '腾讯会议' },
-  { id: 'us.zoom.xos', name: 'Zoom' },
-  { id: 'com.electron.lark', name: '飞书' },
-  { id: 'com.alibaba.dingtalk.mac', name: '钉钉' },
-];
 
 // 用户可在设置里增删。settings.stealth.apps === null 表示「沿用内置名单」
 function stealthList() {
@@ -1333,22 +1130,7 @@ ipcMain.handle('login-set', (_e, enabled) => {
 
 // ============ v1.7：横切小工具 ============
 // 带超时的命令执行（Promise 化）。权限探测/锁屏/截图都走它，超时一律视为失败而不是挂死
-function runCmd(cmd, args, timeout = 5000) {
-  return new Promise((resolve) => {
-    try {
-      execFile(cmd, args, { timeout }, (err, stdout, stderr) =>
-        resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(stderr || ''), err }));
-    } catch (err) {
-      resolve({ ok: false, stdout: '', stderr: '', err });
-    }
-  });
-}
 
-const fetchJson = async (url, timeout = 8000) => {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeout) }); // Node 20 内置 fetch，零依赖
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-};
 
 // 自动定位：先用免 key 地理服务取真实经纬度，再交给 wttr.in 做坐标查询。
 // 为什么不再依赖 wttr.in 自带的 IP 定位：它按「公网出口 IP」判定，
@@ -1412,34 +1194,7 @@ ipcMain.handle('data-show', () => {
 // ⚠️ 码表必须跟着数据源走：wttr.in 用的是 WWO **三位**码（113/116/119/122/149/176…），
 // 不是 Open-Meteo 那套 WMO 0-99 码。此前误用 WMO 码表，实测 wttr.in 返回的码
 // 一个都命不中，导致几乎所有天气都 fallback 成「🌡️ 未知」。这里按 wttr.in 的码全量补齐
-const WX_CODES = {
-  113: ['☀️', '晴'], 116: ['🌤️', '大部晴'], 119: ['☁️', '阴'], 122: ['☁️', '阴'],
-  143: ['🌫️', '薄雾'], 149: ['🌫️', '烟霾'],
-  176: ['🌦️', '附近有阵雨'], 179: ['🌨️', '零星小雪'], 182: ['🌨️', '零星雨夹雪'],
-  185: ['🌧️', '零星冻毛毛雨'], 200: ['⛈️', '附近有雷'],
-  227: ['❄️', '风吹雪'], 230: ['❄️', '暴风雪'],
-  248: ['🌫️', '雾'], 260: ['🌫️', '冻雾'],
-  263: ['🌦️', '零星小毛毛雨'], 266: ['🌧️', '小毛毛雨'],
-  281: ['🌧️', '冻毛毛雨'], 284: ['🌧️', '强冻毛毛雨'],
-  293: ['🌦️', '零星小雨'], 296: ['🌧️', '小雨'],
-  299: ['🌧️', '间歇中雨'], 302: ['🌧️', '中雨'],
-  305: ['🌧️', '间歇大雨'], 308: ['🌧️', '大雨'],
-  311: ['🌧️', '冻雨'], 314: ['🌧️', '中到强冻雨'],
-  317: ['🌧️', '冻雨'], 320: ['🌧️', '中到强冻雨'],
-  323: ['🌨️', '零星小雪'], 326: ['🌨️', '小雪'],
-  329: ['🌨️', '零星中雪'], 332: ['🌨️', '中雪'],
-  335: ['❄️', '零星大雪'], 338: ['❄️', '大雪'],
-  350: ['🌨️', '冰粒'],
-  353: ['🌦️', '小阵雨'], 356: ['🌧️', '中到大阵雨'], 359: ['⛈️', '暴雨'],
-  362: ['🌨️', '小阵雨夹雪'], 365: ['🌨️', '中到大阵雨夹雪'],
-  368: ['🌨️', '小阵雪'], 371: ['🌨️', '中到大阵雪'],
-  374: ['🌨️', '小阵冰粒'], 377: ['🌨️', '中到大阵冰粒'],
-  386: ['⛈️', '零星雷雨'], 389: ['⛈️', '雷雨'],
-  392: ['⛈️', '零星雷雪'], 395: ['⛈️', '雷雪'],
-};
 // 带伞 / 保暖提示用的集合，同样按 WWO 码（原来也是 WMO 码，一并纠正）
-const RAIN_CODES = new Set([176, 263, 266, 281, 284, 293, 296, 299, 302, 305, 308, 311, 314, 317, 320, 353, 356, 359, 362, 365, 374, 377, 386, 389]);
-const SNOW_CODES = new Set([179, 182, 227, 230, 323, 326, 329, 332, 335, 338, 350, 368, 371, 392, 395]);
 
 let weatherCache = null;      // 最近一次成功结果（仅内存，重启重取 —— 数据本身无隐私价值，不值得落盘）
 let weatherTimer = null;
@@ -2124,11 +1879,6 @@ ipcMain.handle('clip-pause', (_e, payload) => {
 });
 
 // ============ v1.6 B2-2：权限服务（TCC 探测 + 深链）============
-const DEEP_LINKS = {
-  screen: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
-  accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
-  automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
-};
 
 // 屏幕录制态：零成本、不弹窗（askForMediaAccess 不支持 'screen'，弹窗只能靠真截图触发）
 function screenStatus() {
