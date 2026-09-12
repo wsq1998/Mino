@@ -1274,11 +1274,19 @@ const fetchJson = async (url, timeout = 8000) => {
 let geoCache = null;
 async function ipGeo() {
   if (geoCache && Date.now() - geoCache.at < 24 * 3600 * 1000) return geoCache;
+  // 坐标来源 api.ip.sb（实测定位准）；显示名再用 BigDataCloud 免 key 逆地理换成中文，
+  // 失败退回 api.ip.sb 的英文名 —— 界面上「西安市」比「Xi'an」更像定位信息
   const g = await fetchJson('https://api.ip.sb/geoip', 6000);
   const lat = Number(g.latitude);
   const lon = Number(g.longitude);
   if (!lat || !lon) throw new Error('geo 无坐标');
-  geoCache = { city: g.city || g.region || '当前位置', lat, lon, at: Date.now() };
+  let city = g.city || g.region || '当前位置';
+  try {
+    // 显示名用 BigDataCloud 免 key 中文逆地理（pconline 按 IP 频控太抖，弃用）
+    const z = await fetchJson(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=zh`, 6000);
+    if (z && z.city) city = z.city; // 如「西安市」
+  } catch {} // 中文名只是锦上添花，拿不到不影响定位
+  geoCache = { city, lat, lon, at: Date.now() };
   return geoCache;
 }
 
