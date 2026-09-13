@@ -1,0 +1,41 @@
+# Mio CI —— 零第三方依赖，仅 node --test + 语法检查
+# 触发：push / PR 到 main
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Unit tests & syntax check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mio 依赖 macOS 系统命令（system_profiler/du/pgrep/PlistBuddy），
+      # 单测纯函数层不触发行命令，但跑在 macOS 上最贴近真实环境。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install (dev only)
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Syntax check all JS sources
+        run: |
+          for f in main.js preload.js main/*.js main/core/*.js main/clean/*.js renderer/*.js test/*.js; do
+            [ -f "$f" ] && node --check "$f"
+          done
+          echo "All JS syntax OK"
+
+      - name: Verify zero runtime dependencies
+        run: |
+          deps=$(node -e "const p=require('./package.json');console.log((p.dependencies?Object.keys(p.dependencies).length:0)+(p.optionalDependencies?Object.keys(p.optionalDependencies).length:0))")
+          echo "runtime deps = $deps"
+          [ "$deps" = "0" ] && echo "OK: zero runtime deps" || (echo "FAIL: runtime deps must be 0"; exit 1)
