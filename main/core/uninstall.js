@@ -142,4 +142,5 @@ module.exports = {
   readBundleId,
   dirSizeQuick,
   isRunning,
+  kindOf,
 };
