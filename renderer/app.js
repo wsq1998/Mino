@@ -35,6 +35,16 @@ const previewSettings = {
   autoClean: { enabled: false, pausedUntil: null, lastRun: null },
   ai: { enabled: false, provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', monthlyCap: 0, maxTokens: 512, persona: '你是 Mio，一个住在用户 macOS 桌面上的小机器人伙伴。' },
   onboarding: { done: false },
+  battery: { enabled: false, low: 20, full: 80 },
+  privacy: { monitor: true, ignoreApps: [] },
+  bluetooth: { enabled: true, interval: 60 },
+  recurring: { items: [] },
+  network: { enabled: true },
+  uninstall: { confirmAlways: true },
+  split: { enabled: true, hotkey: null },
+  stash: { enabled: true, persist: true, items: [] },
+  snippets: { items: [] },
+  sunburst: { enabled: true },
   isPackaged: false, loginItem: false,
   stealthApps: [{ id: 'com.colliderli.iina', name: 'IINA' }, { id: 'org.videolan.vlc', name: 'VLC' }],
   version: '1.8.0', userDataPath: '~/Library/Application Support/Mio',
@@ -226,7 +236,7 @@ function escHtml(s) {
 // 声明放在前面：tickClock 会在启动阶段立即调用 chimeTick，不能等到文件末尾才初始化
 const pad2 = (n) => String(n).padStart(2, '0');
 // 只有这些键属于「设置」，其余是 meta（isPackaged / version …），不能混进 settings
-const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather', 'autoClean', 'ai', 'onboarding', 'countdown', 'launcher'];
+const SETTING_KEYS = ['general', 'appearance', 'chime', 'health', 'notify', 'pomodoro', 'stealth', 'clipboard', 'capture', 'hotkey', 'consent', 'weather', 'autoClean', 'ai', 'onboarding', 'countdown', 'launcher', 'battery', 'privacy', 'bluetooth', 'recurring', 'network', 'uninstall', 'split', 'stash', 'snippets', 'sunburst'];
 let settings = {
   general: { autoOpen: false },
   appearance: { theme: 'dark', size: 'md', opacity: 1, onTop: true, gaze: true, clickThrough: true, reduceMotion: false, displayId: null, material: 'glass' },
@@ -257,6 +267,17 @@ let settings = {
   autoClean: { enabled: false, pausedUntil: null, lastRun: null },
   ai: { enabled: false, provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', monthlyCap: 0, maxTokens: 512, persona: '你是 Mio，一个住在用户 macOS 桌面上的小机器人伙伴。' },
   onboarding: { done: false },
+  // ===== v2.0 新功能分组（与主进程 settings.js 对齐）=====
+  battery: { enabled: false, low: 20, full: 80 },
+  privacy: { monitor: true, ignoreApps: [] },
+  bluetooth: { enabled: true, interval: 60 },
+  recurring: { items: [] },
+  network: { enabled: true },
+  uninstall: { confirmAlways: true },
+  split: { enabled: true, hotkey: null },
+  stash: { enabled: true, persist: true, items: [] },
+  snippets: { items: [] },
+  sunburst: { enabled: true },
 };
 let settingsMeta = { isPackaged: false, loginItem: false, stealthApps: [], version: '', userDataPath: '', displays: [], permissions: null, hotkeyRegistered: true };
 let gazeEnabled = true; // 视线跟随开关，由 appearance.gaze 决定
@@ -532,6 +553,15 @@ function applyFeatureVisibility() {
   if (countdownCard) countdownCard.hidden = !settings.countdown.enabled;
   if (launcherCard) launcherCard.hidden = !settings.launcher.enabled;
   if (pomoStatCard) pomoStatCard.hidden = !settings.pomodoro.enabled;
+  // ===== v2.0 批次B：新功能卡片显示/隐藏（跟随设置开关）=====
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.hidden = !on; };
+  show('batteryCard', (settings.battery || {}).enabled);
+  show('recurringCard', true); // 循环提醒卡片常显（管理入口）
+  show('netCard', (settings.network || {}).enabled);
+  show('splitCard', (settings.split || {}).enabled);
+  show('clipImgCard', (settings.clipboard || {}).imageHistory);
+  show('stashCard', (settings.stash || {}).enabled);
+  show('snippetCard', true); // 文本片段卡片常显
 }
 
 // v1.9：快捷启动按钮 —— 数据驱动渲染（数据源 settings.launcher.items）
@@ -559,6 +589,245 @@ function renderLaunchItemList() {
     : '<div class="sub">还没有自定义启动项</div>';
 }
 
+// ============ v2.0 批次B：常用页新功能（F1/F4/F6/F8/F9/F10/F11）============
+const v2 = (bridge && bridge.v2) || {
+  // 浏览器预览降级 mock（字段与主进程返回对齐）
+  batteryInfo: async () => ({ ok: true, present: true, pct: 76, charging: false }),
+  recurringList: async () => ({ ok: true, items: [] }),
+  recurringAdd: async () => ({ ok: true, items: [] }),
+  recurringSet: async () => ({ ok: true, items: [] }),
+  recurringRemove: async () => ({ ok: true, items: [] }),
+  onRecurringFired: () => {},
+  netInfo: async () => ({ ok: true, enabled: true, lan: '192.168.1.23', wan: '1.2.3.4' }),
+  netCopy: async () => ({ ok: true }),
+  split: async () => ({ ok: true }),
+  clipImageList: async () => ({ ok: true, items: [] }),
+  stashList: async () => ({ ok: true, items: [] }),
+  stashAdd: async () => ({ ok: true, items: [] }),
+  stashRemove: async () => ({ ok: true, items: [] }),
+  stashClear: async () => ({ ok: true }),
+  snippetList: async () => ({ ok: true, items: [] }),
+  snippetSave: async () => ({ ok: true, items: [] }),
+  snippetRemove: async () => ({ ok: true, items: [] }),
+  snippetInsert: async () => ({ ok: true }),
+};
+
+// ---- F1 电量卡片 ----
+async function renderBatteryCard() {
+  const card = document.getElementById('batteryCard');
+  if (!card || card.hidden) return;
+  try {
+    const r = await v2.batteryInfo();
+    if (!r || !r.ok) { setText('batteryValue', '—'); return; }
+    if (!r.present) {
+      setText('batteryValue', '无电池');
+      setText('batteryState', '台式机 / 虚拟机');
+      return;
+    }
+    const pct = r.pct;
+    const charging = r.charging;
+    const icon = charging ? '🔌' : '🔋';
+    setText('batteryValue', `${icon} ${pct}%`);
+    setText('batteryState', charging ? '充电中' : '使用中');
+    setText('batteryDetail', pct >= 80 ? '高' : pct >= 20 ? '中' : '低' + '电量');
+  } catch { setText('batteryValue', '—'); }
+}
+
+// ---- F4 循环提醒卡片（列表 + 新增）----
+async function renderRecurringCard() {
+  const list = document.getElementById('recurringList');
+  if (!list) return;
+  const r = await v2.recurringList();
+  const items = (r && r.ok && r.items) || [];
+  setText('recurringBrief', items.length ? `${items.length} 个提醒` : '暂无提醒');
+  list.innerHTML = items.length
+    ? items.map((it) => `
+      <div class="sl-item">
+        <span class="sl-name">${escHtml(it.name)}</span>
+        <span class="sl-id">${escHtml(it.rule)}${it.enabled === false ? ' · 已停' : ''}</span>
+        <button class="sl-del" data-rid="${escHtml(it.id)}" title="删除">✕</button>
+      </div>`).join('')
+    : '<div class="sub">添加一个循环提醒，如「每 2 小时喝水」</div>';
+}
+
+async function addRecurring() {
+  const name = document.getElementById('recName').value.trim();
+  const rule = document.getElementById('recRule').value.trim();
+  if (!name || !rule) { say('循环提醒', '请填写名称和规则'); return; }
+  const r = await v2.recurringAdd({ name, rule });
+  if (r && r.ok) {
+    document.getElementById('recName').value = '';
+    document.getElementById('recRule').value = '';
+    renderRecurringCard();
+  } else {
+    say('循环提醒', (r && r.error) || '添加失败，规则格式可能不对');
+  }
+}
+
+// ---- F6 网络 IP 卡片 ----
+async function renderNetCard() {
+  const card = document.getElementById('netCard');
+  if (!card || card.hidden) return;
+  try {
+    const r = await v2.netInfo();
+    if (!r || !r.ok) return;
+    setText('netLan', r.lan || '—');
+    setText('netWan', r.wan || '—');
+  } catch {}
+}
+async function copyNet(kind) {
+  const r = await v2.netInfo();
+  const ip = kind === 'lan' ? (r && r.lan) : (r && r.wan);
+  if (!ip) { say('网络 IP', '暂无该地址'); return; }
+  await v2.netCopy(ip);
+  showToast('已复制', ip);
+}
+
+// ---- F8 窗口分屏 ----
+async function doSplit(which) {
+  const r = await v2.split(which);
+  const notice = document.getElementById('splitNotice');
+  if (!notice) return;
+  if (r && r.ok) {
+    notice.hidden = true;
+    showToast('分屏', { left: '左半屏', right: '右半屏', top: '上半屏', bottom: '下半屏' }[which] || '');
+  } else if (r && r.need) {
+    notice.hidden = false;
+    notice.textContent = '需要辅助功能权限，请在系统设置中为 Mio 开启';
+  } else {
+    notice.hidden = false;
+    notice.textContent = (r && r.error) || '分屏失败';
+  }
+}
+
+// ---- F9 剪贴板图片历史 ----
+async function renderClipImgCard() {
+  const brief = document.getElementById('clipImgBrief');
+  const list = document.getElementById('clipImgList');
+  if (!brief || !list) return;
+  const r = await v2.clipImageList();
+  const items = (r && r.ok && r.items) || [];
+  setText('clipImgBrief', items.length ? `${items.length} 张` : '暂无图片');
+  list.innerHTML = items.length
+    ? items.slice(0, 12).map((it) => `<img class="clip-img" src="${escHtml(it.dataUrl || it.preview || '')}" alt="clip">`).join('')
+    : '<div class="sub">复制图片后出现在这里（仅内存）</div>';
+}
+
+// ---- F10 中转站 ----
+async function renderStashCard() {
+  const list = document.getElementById('stashList');
+  if (!list) return;
+  const r = await v2.stashList();
+  const items = (r && r.ok && r.items) || [];
+  list.innerHTML = items.length
+    ? items.map((it) => `
+      <div class="sl-item">
+        <span class="sl-name">${escHtml(it.name || pathBase(it.path))}</span>
+        <span class="sl-id">${escHtml(it.path)}</span>
+        <button class="sl-del" data-sid="${escHtml(it.id)}" title="移除">✕</button>
+      </div>`).join('')
+    : '<div class="sub">暂无文件，粘贴路径加入</div>';
+}
+function pathBase(p) { try { return String(p).split('/').pop(); } catch { return p; } }
+async function addStash() {
+  const input = document.getElementById('stashPath');
+  const path = input.value.trim();
+  if (!path) return;
+  const r = await v2.stashAdd({ path });
+  if (r && r.ok) { input.value = ''; renderStashCard(); }
+  else say('中转站', (r && r.error) || '无法加入该路径');
+}
+async function clearStash() {
+  const ok = await showConfirm('清空中转站', '只移除所有路径引用，不删除任何文件。确定？');
+  if (!ok) return;
+  await v2.stashClear();
+  renderStashCard();
+}
+
+// ---- F11 文本片段 ----
+async function renderSnippetCard() {
+  const list = document.getElementById('snippetList');
+  if (!list) return;
+  const r = await v2.snippetList();
+  const items = (r && r.ok && r.items) || [];
+  list.innerHTML = items.length
+    ? items.map((it) => `
+      <div class="sl-item">
+        <span class="sl-name">${escHtml(it.name)}</span>
+        <span class="sl-id ellip">${escHtml(String(it.text).slice(0, 40))}</span>
+        <button class="btn tiny" data-sins="${escHtml(it.id)}">插入</button>
+        <button class="sl-del" data-sdel="${escHtml(it.id)}" title="删除">✕</button>
+      </div>`).join('')
+    : '<div class="sub">暂无片段，点「新增」添加</div>';
+}
+async function saveSnippet() {
+  const name = document.getElementById('snipName').value.trim();
+  const text = document.getElementById('snipText').value;
+  if (!name || !text) { say('文本片段', '请填写名称和内容'); return; }
+  const r = await v2.snippetSave({ name, text });
+  if (r && r.ok) {
+    document.getElementById('snipName').value = '';
+    document.getElementById('snipText').value = '';
+    document.getElementById('snippetForm').hidden = true;
+    renderSnippetCard();
+  } else { say('文本片段', (r && r.error) || '保存失败'); }
+}
+
+// ---- v2.0 事件绑定（卡片交互）----
+function wireV2Events() {
+  const on = (id, evt, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(evt, fn); };
+  on('batteryCard', 'click', renderBatteryCard);
+  on('recAddBtn', 'click', addRecurring);
+  on('netCopyLan', 'click', () => copyNet('lan'));
+  on('netCopyWan', 'click', () => copyNet('wan'));
+  on('netRefresh', 'click', renderNetCard);
+  on('stashPath', 'keydown', (e) => { if (e.key === 'Enter') addStash(); });
+  on('stashClearBtn', 'click', clearStash);
+  on('snipAddToggle', 'click', () => { const f = document.getElementById('snippetForm'); if (f) f.hidden = !f.hidden; });
+  on('snipSaveBtn', 'click', saveSnippet);
+  on('snipCancelBtn', 'click', () => { const f = document.getElementById('snippetForm'); if (f) f.hidden = true; });
+  // 分屏按钮（事件委托）
+  document.querySelectorAll('[data-split]').forEach((b) => b.addEventListener('click', () => doSplit(b.dataset.split)));
+  // 循环提醒删除（事件委托）
+  const rl = document.getElementById('recurringList');
+  if (rl) rl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-rid]');
+    if (!btn) return;
+    await v2.recurringRemove(btn.dataset.rid);
+    renderRecurringCard();
+  });
+  // 中转站删除（事件委托）
+  const sl = document.getElementById('stashList');
+  if (sl) sl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-sid]');
+    if (!btn) return;
+    await v2.stashRemove(btn.dataset.sid);
+    renderStashCard();
+  });
+  // 文本片段：插入 / 删除（事件委托）
+  const sn = document.getElementById('snippetList');
+  if (sn) sn.addEventListener('click', async (e) => {
+    const ins = e.target.closest('[data-sins]');
+    const del = e.target.closest('[data-sdel]');
+    if (ins) { await v2.snippetInsert(ins.dataset.sins); showToast('已插入剪贴板', ''); }
+    if (del) { await v2.snippetRemove(del.dataset.sdel); renderSnippetCard(); }
+  });
+  // 循环提醒到期事件
+  if (v2 && typeof v2.onRecurringFired === 'function') {
+    v2.onRecurringFired((d) => { if (d && d.name) showToast('循环提醒', d.name); });
+  }
+}
+
+// 渲染全部 v2.0 常用页卡片
+function renderV2Cards() {
+  renderBatteryCard();
+  renderRecurringCard();
+  renderNetCard();
+  renderClipImgCard();
+  renderStashCard();
+  renderSnippetCard();
+}
+
 async function loadSettings() {
   try {
     const s = await api.getSettings();
@@ -581,6 +850,9 @@ async function loadSettings() {
   fillDisplays();
   refreshClip();
   refreshTrashBtn();
+  // v2.0 批次B：常用页新功能卡片 —— 事件绑定 + 首轮渲染
+  wireV2Events();
+  renderV2Cards();
 }
 
 // 只发改动的那一枝，主进程做深合并；返回的整棵树里再挑出设置键
@@ -767,6 +1039,17 @@ mioEl.addEventListener('contextmenu', (e) => {
 
 // ============ 气泡 ============
 let bubbleTimer = null;
+// v2.0 批次B：轻量文本工具（渲染 v2 卡片用）
+function setText(id, v) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = v;
+}
+function showToast(title, body = '') {
+  // 与既有气泡提示保持一致（settings.notify.style 由 notifyUser 统一处理）
+  const text = body ? `${title} · ${body}` : title;
+  say(text, 2200);
+}
+
 function say(text, ms = 2200) {
   bubble.textContent = text;
   bubble.hidden = false;

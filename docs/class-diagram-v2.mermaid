@@ -1,0 +1,114 @@
+classDiagram
+    direction LR
+
+    class SettingsStore {
+        -SETTINGS_VERSION int = 8
+        -DEFAULT_SETTINGS object
+        +getSettings() Settings
+        +patchSettings(patch) Settings
+        +deepMerge(base, patch) object
+        +sanitizeSettings(s) Settings
+    }
+
+    class SafeTrash {
+        +isSafeTrashPath(p, opts) bool
+        +isUninstallTarget(p) bool
+        +trash(entries) Report
+        +recordClean(items) void
+    }
+
+    class RecurringScheduler {
+        +parseRule(text) Rule
+        +nextTs(rule, now) number
+        +listItems() Item[]
+        +addItem(item) void
+        +update(id, item) void
+        +remove(id) void
+    }
+
+    class BtService {
+        +scan() Device[]
+        +parseProfiler(out) Device[]
+        +ttlMs int = 60000
+    }
+
+    class IpNetService {
+        +lanIp() string
+        +publicIp() string
+        +copy(ip) void
+    }
+
+    class Uninstaller {
+        +listApps() App[]
+        +scanResiduals(app) Residual[]
+        +uninstall(app, residuals) Report
+    }
+
+    class StashStore {
+        +add(path) StashItem
+        +list() StashItem[]
+        +remove(id) void
+        +clear() void
+        +persist() void
+    }
+
+    class SnippetStore {
+        +list() Snippet[]
+        +add(s) Snippet
+        +update(id, s) void
+        +remove(id) void
+        +insert(snippet) Result
+    }
+
+    class SunburstScanner {
+        +scan(root, depth) Tree
+        +cancel() void
+        +cacheTtlMs int
+    }
+
+    class BackupService {
+        +export() string
+        +import(file) Result
+        +validate(s) Result
+    }
+
+    class MainProcess {
+        +whenReady() void
+        +willQuit() void
+        +batteryTick() void
+        +privacyTick() void
+        +btTick() void
+        +recurringTick() void
+    }
+
+    class RendererApp {
+        +settings Settings
+        +renderNetworkCard() void
+        +renderStashCard() void
+        +renderSnippetCard() void
+        +renderSplitGrid() void
+        +renderSunburst() void
+        +renderBtCard() void
+        +renderPrivacyCard() void
+        +renderSettings() void
+        +t(key) string
+    }
+
+    SettingsStore --> SafeTrash : battery.low/full
+    SettingsStore --> RecurringScheduler : recurring.items
+    SettingsStore --> BtService : bluetooth.interval
+    SettingsStore --> StashStore : stash.items
+    SettingsStore --> SnippetStore : snippets.items
+    MainProcess --> SettingsStore
+    MainProcess --> SafeTrash
+    MainProcess --> RecurringScheduler
+    MainProcess --> BtService
+    MainProcess --> IpNetService
+    MainProcess --> Uninstaller
+    MainProcess --> StashStore
+    MainProcess --> SnippetStore
+    MainProcess --> SunburstScanner
+    MainProcess --> BackupService
+    Uninstaller --> SafeTrash : 卸载执行共用
+    RendererApp ..> MainProcess : v2-* IPC
+    RendererApp --> i18n : t()

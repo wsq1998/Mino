@@ -112,6 +112,79 @@
         </div>
         <div id="qaNotice" class="qa-notice" hidden></div>
       </div>
+      <!-- ===== v2.0 批次B：常用页核心功能（F1/F4/F6/F8/F9/F10/F11）===== -->
+      <!-- F1：电量提醒卡片 -->
+      <div class="card" id="batteryCard" hidden>
+        <div class="label">电量 <span id="batteryDetail" class="sub-inline"></span></div>
+        <div id="batteryValue" class="value">—</div>
+        <div id="batteryState" class="sub">点击刷新</div>
+      </div>
+      <!-- F4：循环提醒卡片 -->
+      <div class="card" id="recurringCard" hidden>
+        <div class="label">循环提醒 <span class="expand-hint">点击管理</span></div>
+        <div id="recurringBrief" class="value small">—</div>
+        <div class="detail">
+          <div id="recurringList" class="recurring-list"></div>
+          <div class="recurring-add">
+            <input id="recName" type="text" class="stext" placeholder="名称" maxlength="60">
+            <input id="recRule" type="text" class="stext" placeholder="规则，如 每2小时 / 每天 09:00" maxlength="120">
+            <button class="btn tiny" id="recAddBtn">添加</button>
+          </div>
+          <div class="set-note">支持中文别名：每N分钟/小时/天，每天 HH:MM，每周N HH:MM</div>
+        </div>
+      </div>
+      <!-- F6 网络 IP 卡片 -->
+      <div class="card" id="netCard" hidden>
+        <div class="label">网络 IP</div>
+        <div class="kv"><span>内网</span><span id="netLan">—</span></div>
+        <div class="kv"><span>公网</span><span id="netWan">—</span></div>
+        <div class="net-actions">
+          <button class="btn tiny" id="netCopyLan">复制内网</button>
+          <button class="btn tiny" id="netCopyWan">复制公网</button>
+          <button class="btn tiny" id="netRefresh">刷新</button>
+        </div>
+      </div>
+      <!-- F8 窗口分屏卡片 -->
+      <div class="card" id="splitCard" hidden>
+        <div class="label">窗口分屏</div>
+        <div class="split-row">
+          <button class="btn" data-split="left">左半屏</button>
+          <button class="btn" data-split="right">右半屏</button>
+          <button class="btn" data-split="top">上半屏</button>
+          <button class="btn" data-split="bottom">下半屏</button>
+        </div>
+        <div id="splitNotice" class="set-note" hidden></div>
+      </div>
+      <!-- F9 剪贴板图片历史卡片 -->
+      <div class="card expandable interactive-btn" id="clipImgCard" hidden data-dv-title="剪贴板图片历史">
+        <div class="label">图片历史 <span class="expand-hint">点击展开</span></div>
+        <div id="clipImgBrief" class="value small">—</div>
+        <div class="detail">
+          <div id="clipImgList" class="clip-img-list"></div>
+          <div class="set-note" id="clipImgNote">仅内存保存，退出即清空</div>
+        </div>
+      </div>
+      <!-- F10 文件暂存区 / 中转站 -->
+      <div class="card" id="stashCard" hidden>
+        <div class="label">中转站 <button class="btn tiny danger" id="stashClearBtn" style="float:right">清空</button></div>
+        <div id="stashList" class="stash-list"></div>
+        <div class="stash-add">
+          <input id="stashPath" type="text" class="stext" placeholder="粘贴文件路径，回车加入" maxlength="500">
+        </div>
+        <div class="set-note">只记录路径引用，绝不移动 / 复制 / 删除源文件</div>
+      </div>
+      <!-- F11 文本片段 -->
+      <div class="card" id="snippetCard" hidden>
+        <div class="label">文本片段 <button class="btn tiny" id="snipAddToggle" style="float:right">新增</button></div>
+        <div id="snippetList" class="snippet-list"></div>
+        <div id="snippetForm" class="snippet-form" hidden>
+          <input id="snipName" type="text" class="stext" placeholder="名称" maxlength="40">
+          <textarea id="snipText" class="stext" rows="2" placeholder="内容（≤2000 字符）" maxlength="2000"></textarea>
+          <button class="btn tiny" id="snipSaveBtn">保存</button>
+          <button class="btn tiny" id="snipCancelBtn">取消</button>
+        </div>
+        <div class="set-note">明文保存在本机，点击「插入」写入剪贴板</div>
+      </div>
       <button class="btn wide" id="homeToSettings">打开设置</button>
       <!-- v1.8 G 组：AI 对话入口（在设置里启用后才显示） -->
       <div class="card" id="chatCard" hidden>
@@ -547,6 +620,112 @@
           </div>
           <div class="set-row"><span>检查更新</span><button class="btn tiny" id="updateCheckBtn">检查</button></div>
           <div id="updateCheckResult" class="sub"></div>
+        </div>
+      </details>
+
+      <!-- ===== v2.0 批次B/C/D：新功能设置分组（F1–F13）===== -->
+      <!-- F1 电量提醒 -->
+      <details class="sgroup" data-group="battery">
+        <summary class="sgroup-h"><span class="sg-name">电量提醒</span><span class="sg-brief" id="sgBrief-battery"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>启用电量 / 满电提醒</span><label class="switch"><input type="checkbox" id="swBattery"><i></i></label></div>
+          <div class="set-row"><span>低电量阈值</span><span class="set-val" id="batteryLowVal">20%</span></div>
+          <input type="range" id="rngBatteryLow" class="srange" min="5" max="95" step="5" value="20">
+          <div class="set-row"><span>满电阈值</span><span class="set-val" id="batteryFullVal">80%</span></div>
+          <input type="range" id="rngBatteryFull" class="srange" min="20" max="100" step="5" value="80">
+          <div class="set-note">低于低电量阈值且未充电时提醒充电；达到满电阈值且仍在充电时提醒拔电。免打扰时段内静默。</div>
+        </div>
+      </details>
+      <!-- F2 隐私占用 -->
+      <details class="sgroup" data-group="privacy">
+        <summary class="sgroup-h"><span class="sg-name">隐私占用监控</span><span class="sg-brief" id="sgBrief-privacy"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>摄像头 / 麦克风占用警示</span><label class="switch"><input type="checkbox" id="swPrivacy"><i></i></label></div>
+          <div class="set-note">检测到摄像头 / 麦克风被占用时在「状态」页提示，可一键忽略该应用</div>
+          <div id="privacyIgnoreList" class="stealth-list"></div>
+          <div class="stealth-actions"><button class="btn tiny" id="privacyReset">恢复默认忽略名单</button></div>
+        </div>
+      </details>
+      <!-- F3 蓝牙电量 -->
+      <details class="sgroup" data-group="bluetooth">
+        <summary class="sgroup-h"><span class="sg-name">蓝牙设备电量</span><span class="sg-brief" id="sgBrief-bluetooth"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>蓝牙设备电量</span><label class="switch"><input type="checkbox" id="swBt"><i></i></label></div>
+          <div class="set-note">AirPods / 耳机等蓝牙设备电量显示在「状态」页；60 秒缓存</div>
+        </div>
+      </details>
+      <!-- F4 循环提醒 -->
+      <details class="sgroup" data-group="recurring">
+        <summary class="sgroup-h"><span class="sg-name">循环提醒</span><span class="sg-brief" id="sgBrief-recurring"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-note">自定义周期性提醒，在「常用」页管理。支持中文别名：每N分钟/小时/天、每天 HH:MM、每周N HH:MM。周期最短 15 分钟。</div>
+        </div>
+      </details>
+      <!-- F6 网络 IP -->
+      <details class="sgroup" data-group="network">
+        <summary class="sgroup-h"><span class="sg-name">网络 IP</span><span class="sg-brief" id="sgBrief-network"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>网络 IP 卡片</span><label class="switch"><input type="checkbox" id="swNet"><i></i></label></div>
+          <div class="set-note">「常用」页显示内网 / 公网 IP，可一键复制。公网经免 key 地理服务获取，缓存 24 小时。</div>
+        </div>
+      </details>
+      <!-- F7 应用卸载 -->
+      <details class="sgroup" data-group="uninstall">
+        <summary class="sgroup-h"><span class="sg-name">应用卸载</span><span class="sg-brief" id="sgBrief-uninstall"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>卸载前二次确认</span><span class="set-val">强制开启</span></div>
+          <div class="set-note">卸载应用只把 App 及其残留移入废纸篓，绝不永久删除；二次确认不可关闭。</div>
+        </div>
+      </details>
+      <!-- F8 窗口分屏 -->
+      <details class="sgroup" data-group="split">
+        <summary class="sgroup-h"><span class="sg-name">窗口分屏</span><span class="sg-brief" id="sgBrief-split"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>窗口分屏</span><label class="switch"><input type="checkbox" id="swSplit"><i></i></label></div>
+          <div class="set-note">「常用」页四向分屏按钮；需要辅助功能权限，未授权时自动降级引导。</div>
+        </div>
+      </details>
+      <!-- F9 剪贴板图片历史 -->
+      <details class="sgroup" data-group="clipimg">
+        <summary class="sgroup-h"><span class="sg-name">剪贴板图片历史</span><span class="sg-brief" id="sgBrief-clipimg"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>图片历史</span><label class="switch"><input type="checkbox" id="swClipImg"><i></i></label></div>
+          <div class="set-note">「常用」页显示剪贴板中的图片历史；仅内存保存，退出即清空。</div>
+        </div>
+      </details>
+      <!-- F10 中转站 -->
+      <details class="sgroup" data-group="stash">
+        <summary class="sgroup-h"><span class="sg-name">文件暂存区 / 中转站</span><span class="sg-brief" id="sgBrief-stash"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>中转站</span><label class="switch"><input type="checkbox" id="swStash"><i></i></label></div>
+          <div class="set-note">只记录路径引用，绝不移动 / 复制 / 删除源文件；最多 100 条。</div>
+        </div>
+      </details>
+      <!-- F11 文本片段 -->
+      <details class="sgroup" data-group="snippets">
+        <summary class="sgroup-h"><span class="sg-name">文本片段</span><span class="sg-brief" id="sgBrief-snippets"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-note">常用文本片段，明文保存在本机；点击「插入」写入剪贴板。最多 20 条，每条 ≤2000 字符。</div>
+        </div>
+      </details>
+      <!-- F12 磁盘太阳图 -->
+      <details class="sgroup" data-group="sunburst">
+        <summary class="sgroup-h"><span class="sg-name">磁盘空间太阳图</span><span class="sg-brief" id="sgBrief-sunburst"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>磁盘太阳图</span><label class="switch"><input type="checkbox" id="swSunburst"><i></i></label></div>
+          <div class="set-note">「状态」页以太阳图可视化磁盘空间占用分布。</div>
+        </div>
+      </details>
+      <!-- F13 设置备份 -->
+      <details class="sgroup" data-group="backup">
+        <summary class="sgroup-h"><span class="sg-name">设置备份</span><span class="sg-brief" id="sgBrief-backup"></span></summary>
+        <div class="sgroup-b">
+          <div class="stealth-actions">
+            <button class="btn tiny" id="backupExportBtn">导出设置</button>
+            <button class="btn tiny" id="backupImportBtn">导入设置</button>
+          </div>
+          <div id="backupResult" class="sub"></div>
+          <div class="set-note">导出为 JSON 文件，可迁移到另一台 Mac；导入会合并当前设置。</div>
         </div>
       </details>
 

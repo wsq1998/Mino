@@ -1,0 +1,30 @@
+sequenceDiagram
+    actor U as 用户
+    participant R as renderer/app.js
+    participant M as main.js
+    participant UN as Uninstaller
+    participant ST as SafeTrash
+    participant T as shell.trashItem
+
+    U->>R: 打开「应用卸载」卡片
+    R->>M: invoke v2-uninstall-list
+    M->>UN: listApps() 扫描 /Applications
+    UN-->>M: [{name, path, size, running}]
+    M-->>R: { ok, apps }
+    R->>R: 勾选 App → 点「卸载」
+    R->>M: invoke v2-uninstall-scan {app}
+    M->>UN: scanResiduals(app) 按 bundleId 匹配
+    UN-->>M: { app, residuals:[{path,size}] }
+    M-->>R: { ok, app, residuals }
+    R->>U: showConfirm「将把 XX 及 N 个残留移入废纸篓，可随时恢复」
+    alt 确认
+        R->>M: invoke v2-uninstall-exec {app, residuals}
+        M->>ST: trashWithConfirm([app, ...residuals])
+        ST->>ST: isUninstallTarget(每路径) 校验
+        ST->>T: shell.trashItem(path) × N
+        ST-->>M: { moved, failed }
+        M-->>R: { ok, moved, failed }
+        R->>U: 气泡「已移入废纸篓 N 项」
+    else 取消
+        R->>U: 静默
+    end
