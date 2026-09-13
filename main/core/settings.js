@@ -80,8 +80,6 @@ const DEFAULT_SETTINGS = {
   privacy: { monitor: true, ignoreApps: [] },
   // F3 蓝牙设备电量：默认开；interval 秒（60s 缓存）
   bluetooth: { enabled: true, interval: 60 },
-  // F4 自定义循环提醒：items 数组 [{ id, name, rule, enabled, nextTs }]
-  recurring: { items: [] },
   // F6 网络 IP 卡片：enabled 开关
   network: { enabled: true },
   // F7 应用卸载：二次确认强制开启（不可关）
@@ -90,8 +88,6 @@ const DEFAULT_SETTINGS = {
   split: { enabled: true, hotkey: null },
   // F10 文件暂存区 / 中转站：只记路径引用，不移动/复制/删除源文件
   stash: { enabled: true, persist: true, items: [] },
-  // F11 常用文本片段：明文落盘（上限 20 条 / 2000 字符）
-  snippets: { items: [] },
   // F12 磁盘空间太阳图：默认开启
   sunburst: { enabled: true },
 };
@@ -186,18 +182,6 @@ function sanitizeSettings(s) {
   s.bluetooth.enabled = !!s.bluetooth.enabled;
   const btInt = Number(s.bluetooth.interval);
   s.bluetooth.interval = Number.isFinite(btInt) ? clamp(Math.round(btInt), 30, 3600) : 60;
-  // F4 recurring.items：数组收口 —— 每条必须 id/name/rule 合法，enabled 布尔，nextTs 数字
-  if (!Array.isArray(s.recurring.items)) s.recurring.items = [];
-  s.recurring.items = s.recurring.items
-    .filter((it) => it && typeof it === 'object' && String(it.name || '').trim() !== '' && String(it.rule || '').trim() !== '')
-    .slice(0, 20)
-    .map((it) => ({
-      id: String(it.id || '').trim() || `rec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      name: String(it.name).trim().slice(0, 60),
-      rule: String(it.rule).trim().slice(0, 120),
-      enabled: it.enabled !== false,
-      nextTs: Number(it.nextTs) > 0 ? Number(it.nextTs) : 0,
-    }));
   // F6 network：enabled 布尔
   if (!s.network || typeof s.network !== 'object') s.network = {};
   s.network.enabled = !!s.network.enabled;
@@ -220,17 +204,6 @@ function sanitizeSettings(s) {
   s.stash.items = Array.isArray(s.stash.items)
     ? s.stash.items.filter((it) => it && typeof it === 'object' && typeof it.path === 'string' && it.path.trim() !== '').slice(0, 100)
     : [];
-  // F11 snippets：数组收口（最多 20 条，每条 name/text 非空且 text ≤ 2000 字符）
-  if (!Array.isArray(s.snippets.items)) s.snippets.items = [];
-  s.snippets.items = s.snippets.items
-    .filter((it) => it && typeof it === 'object' && String(it.name || '').trim() !== '' && typeof it.text === 'string')
-    .slice(0, 20)
-    .map((it) => ({
-      id: String(it.id || '').trim() || `snip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      name: String(it.name || '').trim().slice(0, 40),
-      text: String(it.text).slice(0, 2000),
-      createdAt: Number(it.createdAt) > 0 ? Number(it.createdAt) : Date.now(),
-    }));
   // F12 sunburst：enabled 布尔
   if (!s.sunburst || typeof s.sunburst !== 'object') s.sunburst = {};
   s.sunburst.enabled = !!s.sunburst.enabled;

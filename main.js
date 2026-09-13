@@ -15,10 +15,8 @@ const { execP, runCmd, fetchJson, dirSize } = require('./main/core/exec.js');
 const { pomoFile, loadPomo, logPomo, pomoStats } = require('./main/core/pomo.js');
 const alarm = require('./main/core/alarm.js'); // v1.9 真正的闹钟/倒计时（主进程持久化）
 // ===== v2.0 批次B：常用页核心功能纯函数层 =====
-const recurring = require('./main/core/recurring.js'); // F4 循环提醒（规则解析/校验/到期推进）
 const ipnet = require('./main/core/ipnet.js');         // F6 网络 IP（内网/公网/复制）
 const stash = require('./main/core/stash.js');         // F10 文件暂存区（只存路径引用）
-const snippets = require('./main/core/snippets.js');   // F11 文本片段（明文落盘）
 const bluetooth = require('./main/core/bluetooth.js'); // F3 蓝牙设备电量（60s 缓存）
 const uninstaller = require('./main/core/uninstall.js'); // F7 应用卸载器（safeTrash 封装）
 const sunburst = require('./main/core/sunburst.js');   // F12 磁盘空间太阳图（du 扫描 + 缓存）
@@ -43,7 +41,6 @@ let alarmTimer = null; // v1.9 倒计时 tick
 // ===== v2.0 批次B：常用页轮询状态 =====
 let batteryTimer = null;        // F1 电量提醒轮询（60s）
 let batteryNotifiedLevel = null; // F1 已提醒过的电量档位（内存 + 落盘，跨重启防重复打扰）
-let recurringTimer = null;      // F4 循环提醒轮询（60s，到点触发）
 
 // ============ v1.5：设置中心 ============
 // settings 自 v1.5 起带版本号（_v）。升级靠 deepMerge 而非逐版 migration 函数：
@@ -3299,7 +3296,6 @@ app.on('will-quit', () => {
   if (weatherTimer) clearInterval(weatherTimer);
   if (alarmTimer) clearInterval(alarmTimer); // v1.9 倒计时 tick
   if (batteryTimer) clearInterval(batteryTimer); // v2.0 F1 电量提醒
-  if (recurringTimer) clearInterval(recurringTimer); // v2.0 F4 循环提醒
   if (privacyTimer) clearInterval(privacyTimer); // v2.0 F2 隐私占用
   stopClip(); // v1.6：停轮询，内存里的剪贴板历史随进程一起消失
 });
@@ -3366,52 +3362,6 @@ function batteryTick() {
   }
 }
 
-// ---- F4 循环提醒（60s 轮询；到点发系统通知 + 广播；重启不补跑）----
-function recurringTick() {
-  const s = getSettings().recurring || {};
-  const items = Array.isArray(s.items) ? s.items : [];
-  if (!items.length) return;
-  if (v2InQuietHours()) return;
-  const { due, items: nextItems } = recurring.dueItems(items, Date.now());
-  if (!due.length) return;
-  // 推进 nextTs 并落盘（settings 里存的是同一份数组，直接回写）
-  patchSettings({ recurring: { items: nextItems } });
-  const lang = resolveLang(getSettings().general.lang);
-  due.forEach((d) => {
-    const title = i18nT('recurring.fire.title', { lang });
-    const body = i18nT('recurring.fire.body', { lang, vars: { name: d.name || d.rule || '' } });
-    logMessage(title, body);
-    new Notification({ title, body, silent: false }).show();
-    if (win && !win.isDestroyed()) {
-      try { win.webContents.send('recurring-fired', { id: d.id, name: d.name, rule: d.rule }); } catch {}
-    }
-  });
-}
-
-// F4 IPC：列表 / 新增 / 更新 / 删除（CRUD 都走 settings.recurring.items）
-ipcMain.handle('v2-recurring-list', () => {
-  const items = (getSettings().recurring && getSettings().recurring.items) || [];
-  return { ok: true, items: recurring.listItems(items) };
-});
-ipcMain.handle('v2-recurring-add', (_e, payload) => {
-  const items = (getSettings().recurring && getSettings().recurring.items) || [];
-  const r = recurring.addItem(items, payload || {});
-  if (r.ok) patchSettings({ recurring: { items: r.items } });
-  return r;
-});
-ipcMain.handle('v2-recurring-set', (_e, payload) => {
-  const items = (getSettings().recurring && getSettings().recurring.items) || [];
-  const r = recurring.updateItem(items, payload && payload.id, payload || {});
-  if (r.ok) patchSettings({ recurring: { items: r.items } });
-  return r;
-});
-ipcMain.handle('v2-recurring-remove', (_e, payload) => {
-  const items = (getSettings().recurring && getSettings().recurring.items) || [];
-  const r = recurring.removeItem(items, payload && payload.id);
-  if (r.ok) patchSettings({ recurring: { items: r.items } });
-  return r;
-});
-
 // ---- F6 网络 IP（内网 ipconfig / 公网 api.ip.sb，24h 缓存）----
 ipcMain.handle('v2-net-info', async () => {
   const s = getSettings().network || {};
@@ -3472,26 +3422,11 @@ ipcMain.handle('v2-stash-add', (_e, payload) => {
 ipcMain.handle('v2-stash-remove', (_e, payload) => stash.remove(payload && payload.id));
 ipcMain.handle('v2-stash-clear', () => stash.clear());
 
-// ---- F11 文本片段（明文落盘，UI 需披露）----
-ipcMain.handle('v2-snippet-list', () => ({ ok: true, items: snippets.list() }));
-ipcMain.handle('v2-snippet-save', (_e, payload) => snippets.add(payload || {}));
-ipcMain.handle('v2-snippet-remove', (_e, payload) => snippets.remove(payload && payload.id));
-ipcMain.handle('v2-snippet-insert', (_e, payload) => {
-  const r = snippets.insert(payload && payload.id);
-  if (r.ok) {
-    try { clipboard.writeText(r.text); } catch { return { ok: false, error: '写入剪贴板失败' }; }
-  }
-  return r;
-});
-
 // 启动轮询：whenReady 里调用；willQuit 里清理
 function startV2Polling() {
   // F1 电量：60s 一次（启动先跑一次，让状态即时可用）
   batteryTick();
   batteryTimer = setInterval(batteryTick, 60000);
-  // F4 循环提醒：60s 一次（到点即触发；重启不补跑）
-  recurringTick();
-  recurringTimer = setInterval(recurringTick, 60000);
   // v2.0 批次C：F2 隐私占用 10s 轮询（先跑一次让状态即时可用）
   privacyTick();
   privacyTimer = setInterval(privacyTick, 10000);

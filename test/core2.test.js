@@ -1,6 +1,6 @@
 // Mio - v2.0 批次 D 纯函数层单元测试（node:test，零第三方）
 // 覆盖：sunburst（parseDu/computeOwnSize）、uninstall（kindOf）、
-//       stash（暂存引用 CRUD + 校验）、snippets（片段 CRUD + 上限/截断）。
+//       stash（暂存引用 CRUD + 校验）。
 // 运行：npm test（= node --test test/*.test.js）
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -13,7 +13,7 @@ const sunburst = require('../main/core/sunburst.js');
 const uninstall = require('../main/core/uninstall.js');
 
 // ===== 工具：mock electron，把 userData 指向临时目录 =====
-// stash/snippets 通过 require('electron').app.getPath('userData') 取落盘路径。
+// stash 通过 require('electron').app.getPath('userData') 取落盘路径。
 // 用 Module._load 拦截，注入一个指向 os.tmpdir()/mio-test-userData 的 mock。
 let tmpUserData = null;
 const origLoad = Module._load;
@@ -38,7 +38,6 @@ function freshUserData() {
   if (tmpUserData) { try { fs.rmSync(tmpUserData, { recursive: true, force: true }); } catch {} }
   tmpUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'mio-test-userdata-'));
   delete require.cache[require.resolve('../main/core/stash.js')];
-  delete require.cache[require.resolve('../main/core/snippets.js')];
   return tmpUserData;
 }
 
@@ -160,53 +159,6 @@ test('stash.remove/clear 删除引用（不删源文件）', () => {
   assert.equal(fs.existsSync(p), true);
   // clear 幂等
   assert.deepEqual(stash.clear(), { ok: true, items: [] });
-});
-
-// ===== snippets：片段 CRUD =====
-test('snippets.add 名称/内容非空 + 长度上限', () => {
-  const snippets = require('../main/core/snippets.js');
-  assert.equal(snippets.add({ name: '', text: 'x' }).ok, false);
-  assert.equal(snippets.add({ name: 'n', text: '' }).ok, false);
-  const long = 'x'.repeat(2001);
-  const r = snippets.add({ name: 'n', text: long });
-  assert.equal(r.ok, false);
-  assert.match(r.error, /2000/);
-});
-
-test('snippets.add 成功 + 名称截断 40 字符', () => {
-  const ud = freshUserData();
-  const snippets = require('../main/core/snippets.js');
-  const longName = 'n'.repeat(60);
-  const r = snippets.add({ name: longName, text: 'hello' });
-  assert.equal(r.ok, true);
-  assert.equal(r.item.name.length, 40);
-  assert.equal(r.item.text, 'hello');
-});
-
-test('snippets.update 修改 + insert 取文本', () => {
-  const ud = freshUserData();
-  const snippets = require('../main/core/snippets.js');
-  const { item } = snippets.add({ name: 'greet', text: 'hi' });
-  const up = snippets.update(item.id, { text: 'hello world' });
-  assert.equal(up.ok, true);
-  assert.equal(up.item.text, 'hello world');
-  const ins = snippets.insert(item.id);
-  assert.equal(ins.ok, true);
-  assert.equal(ins.text, 'hello world');
-  // 更新不存在 id
-  assert.equal(snippets.update('nope', { text: 'x' }).ok, false);
-  // insert 不存在 id
-  assert.equal(snippets.insert('nope').ok, false);
-});
-
-test('snippets.remove 删除片段', () => {
-  const ud = freshUserData();
-  const snippets = require('../main/core/snippets.js');
-  const { item } = snippets.add({ name: 'tmp', text: 'x' });
-  const rm = snippets.remove(item.id);
-  assert.equal(rm.ok, true);
-  assert.equal(snippets.list().length, 0);
-  assert.equal(snippets.remove(item.id).ok, false); // 已删
 });
 
 // 恢复 Module._load

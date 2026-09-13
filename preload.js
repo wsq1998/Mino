@@ -111,12 +111,6 @@ contextBridge.exposeInMainWorld('mio', {
   v2: {
     // F1 电量提醒：探测电池信息（pct / charging / timeRemaining）
     batteryInfo: () => ipcRenderer.invoke('v2-battery-info'),
-    // F4 循环提醒：CRUD（列表/新增/更新/删除）
-    recurringList: () => ipcRenderer.invoke('v2-recurring-list'),
-    recurringAdd: (payload) => ipcRenderer.invoke('v2-recurring-add', payload || {}),
-    recurringSet: (payload) => ipcRenderer.invoke('v2-recurring-set', payload || {}),
-    recurringRemove: (id) => ipcRenderer.invoke('v2-recurring-remove', { id }),
-    onRecurringFired: (cb) => ipcRenderer.on('recurring-fired', (_e, d) => cb(d)),
     // F6 网络 IP：内网/公网 + 一键复制
     netInfo: () => ipcRenderer.invoke('v2-net-info'),
     netCopy: (ip) => ipcRenderer.invoke('v2-net-copy', { ip }),
@@ -129,11 +123,6 @@ contextBridge.exposeInMainWorld('mio', {
     stashAdd: (payload) => ipcRenderer.invoke('v2-stash-add', payload || {}),
     stashRemove: (id) => ipcRenderer.invoke('v2-stash-remove', id),
     stashClear: () => ipcRenderer.invoke('v2-stash-clear'),
-    // F11 文本片段：CRUD + 插入剪贴板
-    snippetList: () => ipcRenderer.invoke('v2-snippet-list'),
-    snippetSave: (payload) => ipcRenderer.invoke('v2-snippet-save', payload || {}),
-    snippetRemove: (id) => ipcRenderer.invoke('v2-snippet-remove', id),
-    snippetInsert: (id) => ipcRenderer.invoke('v2-snippet-insert', id),
     // ===== v2.0 批次C：状态页 + 系统级（F2/F3/F5/F7/F12）=====
     // F2 隐私占用：拉取当前摄像头/麦克风占用 + 忽略名单
     privacyInfo: () => ipcRenderer.invoke('v2-privacy-info'),

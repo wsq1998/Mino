@@ -19,9 +19,6 @@ const LANG = {
     'privacy.camera.body': '{app} 可能仍在占用摄像头',
     'privacy.mic.title': 'Mio · 麦克风占用',
     'privacy.mic.body': '{app} 可能仍在占用麦克风',
-    // F4 循环提醒
-    'recurring.fire.title': 'Mio · 循环提醒',
-    'recurring.fire.body': '{name}',
     // 清理
     'clean.done.title': 'Mio · 清理完成',
     'clean.done.body': '已移入废纸篓 {n} 项',
@@ -55,8 +52,6 @@ const LANG = {
     'privacy.camera.body': '{app} may be using the camera',
     'privacy.mic.title': 'Mio · Microphone in Use',
     'privacy.mic.body': '{app} may be using the microphone',
-    'recurring.fire.title': 'Mio · Reminder',
-    'recurring.fire.body': '{name}',
     'clean.done.title': 'Mio · Cleanup Done',
     'clean.done.body': '{n} items moved to Trash',
     'clean.rejected': 'Path outside safe scope, rejected',

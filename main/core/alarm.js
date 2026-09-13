@@ -15,7 +15,7 @@ function electron() {
 }
 
 const alarmFile = () => path.join(electron().app.getPath('userData'), 'alarm.json');
-const _onFire = []; // 到点回调列表，由 main.js / recurring.js 注入（v2.0：支持多订阅者）
+const _onFire = []; // 到点回调列表，由 main.js 注入（支持多订阅者）
 
 function load() {
   try {
@@ -60,8 +60,7 @@ function tick() {
     for (const cb of _onFire) { try { cb(a); } catch {} }
   }
 }
-// 注册到点回调（返回取消订阅函数）。v2.0：多订阅者复用同一通道，
-// recurring.js 通过它发「循环提醒到点」通知，互不覆盖。
+// 注册到点回调（返回取消订阅函数）。v2.0：多订阅者复用同一通道，互不覆盖。
 function onFire(cb) {
   if (typeof cb !== 'function') return () => {};
   _onFire.push(cb);
