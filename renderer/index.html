@@ -363,6 +363,44 @@
           <div id="cleanHistList" class="msg-list"></div>
         </div>
       </div>
+      <!-- ===== v2.0 批次C：状态页 + 系统级（F2/F3/F5/F7/F12）===== -->
+      <!-- F2 隐私占用警示（摄像头/麦克风） -->
+      <div class="card expandable interactive-btn" id="privacyCard" data-dv-title="摄像头 / 麦克风占用">
+        <div class="label">隐私占用 <span class="expand-hint">展开</span></div>
+        <div id="privacyBrief" class="sub">—</div>
+        <div class="detail">
+          <div id="privacyList" class="msg-list"></div>
+          <div class="sub">占用检测来自系统进程，可能无法覆盖所有 App</div>
+        </div>
+      </div>
+      <!-- F3 蓝牙设备电量（AirPods 等） -->
+      <div class="card expandable interactive-btn" id="btCard" data-vid="蓝牙设备电量">
+        <div class="label">蓝牙设备 <span class="expand-hint">展开</span></div>
+        <div id="btBrief" class="sub">—</div>
+        <div class="detail">
+          <div id="btList" class="msg-list"></div>
+          <button class="btn small" id="btRefreshBtn">刷新</button>
+        </div>
+      </div>
+      <!-- F12 磁盘空间太阳图 -->
+      <div class="card expandable interactive-btn" id="sunburstCard" data-vid="磁盘空间太阳图">
+        <div class="label">磁盘空间 <span class="expand-hint">展开</span></div>
+        <div id="sunburstBrief" class="sub">—</div>
+        <div class="detail">
+          <canvas id="sunburstCanvas" width="260" height="260"></canvas>
+          <div id="sunburstLegend" class="legend"></div>
+          <button class="btn small" id="sunburstScanBtn">重新扫描</button>
+        </div>
+      </div>
+      <!-- F7 应用卸载器入口（卸载走 safeTrash + 两步确认） -->
+      <div class="card expandable interactive-btn" id="uninstallCard" data-vid="应用卸载器">
+        <div class="label">应用卸载 <span class="expand-hint">展开</span></div>
+        <div id="uninstallBrief" class="sub">—</div>
+        <div class="detail">
+          <div id="uninstallList" class="msg-list"></div>
+          <div id="uninstallConfirm" class="confirm-box" hidden></div>
+        </div>
+      </div>
     </div>
 
     <!-- 设置（v1.5 设置中心：分组折叠 + 搜索） -->

@@ -19,6 +19,9 @@ const recurring = require('./main/core/recurring.js'); // F4 循环提醒（规�
 const ipnet = require('./main/core/ipnet.js');         // F6 网络 IP（内网/公网/复制）
 const stash = require('./main/core/stash.js');         // F10 文件暂存区（只存路径引用）
 const snippets = require('./main/core/snippets.js');   // F11 文本片段（明文落盘）
+const bluetooth = require('./main/core/bluetooth.js'); // F3 蓝牙设备电量（60s 缓存）
+const uninstaller = require('./main/core/uninstall.js'); // F7 应用卸载器（safeTrash 封装）
+const sunburst = require('./main/core/sunburst.js');   // F12 磁盘空间太阳图（du 扫描 + 缓存）
 const { LANG: I18N_LANG, resolveLang, t: i18nT } = require('./main/i18n.js'); // 通知文案 i18n
 const { LLM_PRESETS, LLM_PRICING, KEYCHAIN_SERVICE } = require('./main/llm/presets.js');
 const { WX_CODES, RAIN_CODES, SNOW_CODES } = require('./main/weather/codes.js');
@@ -3297,6 +3300,7 @@ app.on('will-quit', () => {
   if (alarmTimer) clearInterval(alarmTimer); // v1.9 倒计时 tick
   if (batteryTimer) clearInterval(batteryTimer); // v2.0 F1 电量提醒
   if (recurringTimer) clearInterval(recurringTimer); // v2.0 F4 循环提醒
+  if (privacyTimer) clearInterval(privacyTimer); // v2.0 F2 隐私占用
   stopClip(); // v1.6：停轮询，内存里的剪贴板历史随进程一起消失
 });
 
@@ -3488,7 +3492,205 @@ function startV2Polling() {
   // F4 循环提醒：60s 一次（到点即触发；重启不补跑）
   recurringTick();
   recurringTimer = setInterval(recurringTick, 60000);
+  // v2.0 批次C：F2 隐私占用 10s 轮询（先跑一次让状态即时可用）
+  privacyTick();
+  privacyTimer = setInterval(privacyTick, 10000);
 }
+
+// ===================== v2.0 批次C：状态页 + 系统级能力 =====================
+// F2 摄像头/麦克风占用监控（10s 轮询；lsof 过滤音视频设备）
+// 检测方式：lsof -u <user> -n -i 太宽泛，改 lsof -n -P + 过滤 /dev/video* / VDCAssistant / /dev/audio*。
+// macOS 摄像头进程名多为 VDCAssistant / AppleCamera；麦克风为 coreaudiod 之外的进程占用 /dev/audio。
+// 用 lsof 列出打开音视频设备的进程，与忽略名单比对，前台 App 占用只静默展示。
+let privacyTimer = null;
+let privacyCache = { t: 0, cam: [], mic: [] };
+let privacyNotified = {}; // key: `${kind}:${pid}` 已提醒过，避免反复打扰
+
+function privacyTick() {
+  const s = getSettings().privacy || {};
+  if (!s.monitor) return;
+  // 10s 轮询但内部 3s 缓存（命令开销大，避免每轮都跑 lsof）
+  if (Date.now() - privacyCache.t < 3000) return;
+  privacyCache.t = Date.now();
+  const lang = resolveLang(getSettings().general.lang);
+  const ignore = new Set((s.ignoreApps || []).map((a) => String(a).toLowerCase()));
+  const username = os.userInfo().username;
+  execFile('/usr/sbin/lsof', ['-n', '-P', '-u', username], { timeout: 5000 }, (err, stdout) => {
+    if (err) return; // lsof 失败静默
+    const lines = String(stdout || '').split('\n');
+    const cam = new Set();
+    const mic = new Set();
+    for (const line of lines) {
+      const parts = line.split(/\s+/);
+      if (parts.length < 9) continue;
+      const name = parts[0];
+      const pid = parts[1];
+      const file = parts[parts.length - 1] || '';
+      if (/\/dev\/video|\/dev\/camera|VDCAssistant|AppleCamera|FaceTimeHD|CameraHub|VDC/i.test(file) || /VDC/i.test(name)) {
+        if (!ignore.has(String(name).toLowerCase())) cam.add(`${name}:${pid}`);
+      } else if (/\/dev\/audio|coreaudio|AudioDevice|BoomDevice/i.test(file) || /coreaudiod/i.test(name)) {
+        if (!ignore.has(String(name).toLowerCase())) mic.add(`${name}:${pid}`);
+      }
+    }
+    const camArr = [...cam].map((s2) => { const [n, p] = s2.split(':'); return { name: n, pid: p }; });
+    const micArr = [...mic].map((s2) => { const [n, p] = s2.split(':'); return { name: n, pid: p }; });
+    privacyCache.cam = camArr;
+    privacyCache.mic = micArr;
+    // 新占用才提醒（避免每 10s 轰炸）；前台 App 占用只静默展示（由渲染层判断是否前台）
+    for (const d of [...camArr, ...micArr]) {
+      const key = `${d.name}:${d.pid}`;
+      if (!privacyNotified && !privacyNotified[key]) {
+        privacyNotified[key] = true;
+        const kind = camArr.includes(d) ? 'cam' : 'mic';
+        const title = i18nT(kind === 'cam' ? 'privacy.camera.title' : 'privacy.mic.title', { lang });
+        const body = i18nT(kind === 'cam' ? 'privacy.camera.body' : 'privacy.mic.body', { lang, vars: { app: d.name } });
+        logMessage(title, body);
+        new Notification({ title, body, silent: false }).show();
+      }
+    }
+  });
+}
+// 渲染层主动拉取当前占用
+ipcMain.handle('v2-privacy-info', () => ({ ok: true, cam: privacyCache.cam, mic: privacyCache.mic }));
+// 忽略某 App 占用（加入忽略名单，后续不再提醒）
+ipcMain.handle('v2-privacy-ignore', (_e, payload) => {
+  const name = payload && payload.name;
+  if (!name) return { ok: false, error: '缺少 App 名' };
+  const s = getSettings().privacy || {};
+  const list = Array.isArray(s.ignoreApps) ? s.ignoreApps : [];
+  if (!list.includes(name)) {
+    list.push(name);
+    patchSettings({ privacy: { ...s, ignoreApps: list } });
+  }
+  return { ok: true, ignoreApps: list };
+});
+
+// F3 蓝牙设备电量（60s 缓存，bluetooth.scan 内部已缓存）
+ipcMain.handle('v2-bt-list', async () => {
+  try {
+    const devices = await bluetooth.scan();
+    return { ok: true, devices };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+ipcMain.handle('v2-bt-refresh', async () => {
+  bluetooth.reset();
+  try {
+    const devices = await bluetooth.scan();
+    return { ok: true, devices };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+
+// F5 开机启动项管理：扫描用户级 + 系统级 LaunchAgents；用户级启停 = plist 移入/移出
+const LAUNCH_AGENT_DIRS = [
+  path.join(os.homedir(), 'Library/LaunchAgents'),
+  '/Library/LaunchAgents', // 系统级只读
+];
+function readLaunchAgents() {
+  const items = [];
+  for (const dir of LAUNCH_AGENT_DIRS) {
+    if (!fs.existsSync(dir)) continue;
+    let entries;
+    try { entries = fs.readdirSync(dir); } catch { continue; }
+    for (const f of entries) {
+      if (!/\.plist$/.test(f)) continue;
+      const p = path.join(dir, f);
+      let label = '';
+      try {
+        const r = runCmd('/usr/libexec/PlistBuddy', ['-c', 'Print :Label', p], 3000);
+        label = String(r.stdout || '').trim();
+      } catch {}
+      items.push({
+        file: f,
+        path: p,
+        label: label || f.replace(/\.plist$/, ''),
+        system: dir.startsWith('/Library'),
+        enabled: dir === LAUNCH_AGENTS_DIRS[0], // 用户级存在即 enabled；系统级只读展示
+      });
+    }
+  }
+  return items;
+}
+ipcMain.handle('v2-login-list', () => ({ ok: true, items: readLaunchAgents() }));
+// 用户级启停：把 plist 移入/移出 ~/Library/LaunchAgents（可逆，绝不删除）
+ipcMain.handle('v2-login-toggle', async (_e, payload) => {
+  const name = payload && payload.name;
+  const enable = !!payload.enable;
+  if (!name) return { ok: false, error: '缺少 plist 名' };
+  const userDir = LAUNCH_AGENTS_DIRS[0];
+  const src = path.join(userDir, name);
+  const disabledDir = path.join(userDir, 'Disabled');
+  const disabledPath = path.join(disabledDir, name);
+  try {
+    if (enable) {
+      // 从 Disabled 移回
+      if (fs.existsSync(disabledPath)) {
+        fs.mkdirSync(userDir, { recursive: true });
+        fs.renameSync(disabledPath, src);
+      }
+    } else {
+      // 移入 Disabled（不删除，可逆）
+      fs.mkdirSync(disabledDir, { recursive: true });
+      if (fs.existsSync(src)) fs.renameSync(src, disabledPath);
+    }
+    const lang = resolveLang(getSettings().general.lang);
+    const state = enable ? '启用' : '停用';
+    logMessage(i18nT('login.toggle.title', { lang }), i18nT('login.toggle.body', { lang, vars: { name, state } }));
+    return { ok: true, items: readLaunchAgents() };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+
+// F7 应用卸载器：列表 + 残留扫描 + 卸载（safeTrash 唯一删除入口）
+ipcMain.handle('v2-uninstall-list', async () => {
+  try {
+    const apps = await uninstaller.listApps();
+    return { ok: true, apps };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+ipcMain.handle('v2-uninstall-scan', async (_e, payload) => {
+  const app = payload && payload.app;
+  if (!app || !app.path) return { ok: false, error: '缺少应用信息' };
+  try {
+    const residuals = await uninstaller.scanResiduals(app);
+    return { ok: true, residuals };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+ipcMain.handle('v2-uninstall-run', async (_e, payload) => {
+  const app = payload && payload.app;
+  const residuals = payload && payload.residuals;
+  if (!app || !app.path) return { ok: false, error: '缺少应用信息' };
+  // 卸载前二次确认（UI 已做，主进程再兜底：非 confirmAlways 也强制）
+  try {
+    const r = await uninstaller.uninstall(app, residuals);
+    const lang = resolveLang(getSettings().general.lang);
+    if (r.ok) {
+      logMessage(i18nT('uninstall.done.title', { lang }), i18nT('uninstall.done.body', { lang, vars: { name: app.name } }));
+    }
+    return r;
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+
+// F12 磁盘空间太阳图：扫描 ~/ 下标准目录 + 10min 缓存 + 可中止
+ipcMain.handle('v2-sunburst-scan', async () => {
+  try {
+    const tree = await sunburst.scan();
+    return { ok: true, tree };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+ipcMain.handle('v2-sunburst-cancel', () => ({ ok: true, canceled: sunburst.cancel() }));
 
 // 桌宠不需要 dock 图标与多窗口
 app.dock?.hide();

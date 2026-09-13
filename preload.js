@@ -134,5 +134,22 @@ contextBridge.exposeInMainWorld('mio', {
     snippetSave: (payload) => ipcRenderer.invoke('v2-snippet-save', payload || {}),
     snippetRemove: (id) => ipcRenderer.invoke('v2-snippet-remove', id),
     snippetInsert: (id) => ipcRenderer.invoke('v2-snippet-insert', id),
+    // ===== v2.0 批次C：状态页 + 系统级（F2/F3/F5/F7/F12）=====
+    // F2 隐私占用：拉取当前摄像头/麦克风占用 + 忽略名单
+    privacyInfo: () => ipcRenderer.invoke('v2-privacy-info'),
+    privacyIgnore: (name) => ipcRenderer.invoke('v2-privacy-ignore', { name }),
+    // F3 蓝牙设备电量（60s 缓存 + 强制刷新）
+    btList: () => ipcRenderer.invoke('v2-bt-list'),
+    btRefresh: () => ipcRenderer.invoke('v2-bt-refresh'),
+    // F5 开机启动项：列表 + 用户级启停（plist 移入/移出 Disabled，可逆）
+    loginList: () => ipcRenderer.invoke('v2-login-list'),
+    loginToggle: (name, enable) => ipcRenderer.invoke('v2-login-toggle', { name, enable }),
+    // F7 应用卸载器：列表 + 残留扫描 + 卸载（safeTrash 唯一出口）
+    uninstallList: () => ipcRenderer.invoke('v2-uninstall-list'),
+    uninstallScan: (app) => ipcRenderer.invoke('v2-uninstall-scan', { app }),
+    uninstallRun: (app, residuals) => ipcRenderer.invoke('v2-uninstall-run', { app, residuals }),
+    // F12 磁盘太阳图：扫描 + 中止
+    sunburstScan: () => ipcRenderer.invoke('v2-sunburst-scan'),
+    sunburstCancel: () => ipcRenderer.invoke('v2-sunburst-cancel'),
   },
 });

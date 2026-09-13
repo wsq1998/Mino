@@ -610,6 +610,18 @@ const v2 = (bridge && bridge.v2) || {
   snippetSave: async () => ({ ok: true, items: [] }),
   snippetRemove: async () => ({ ok: true, items: [] }),
   snippetInsert: async () => ({ ok: true }),
+  // 批次C mock：状态页（F2/F3/F5/F7/F12）
+  privacyInfo: async () => ({ ok: true, cam: [], mic: [] }),
+  privacyIgnore: async () => ({ ok: true }),
+  btList: async () => ({ ok: true, devices: [] }),
+  btRefresh: async () => ({ ok: true, devices: [] }),
+  loginList: async () => ({ ok: true, items: [] }),
+  loginToggle: async () => ({ ok: true }),
+  uninstallList: async () => ({ ok: true, apps: [] }),
+  uninstallScan: async () => ({ ok: true, residuals: [] }),
+  uninstallRun: async () => ({ ok: true, moved: 0, failed: 0 }),
+  sunburstScan: async () => ({ ok: true, tree: null }),
+  sunburstCancel: async () => ({ ok: true }),
 };
 
 // ---- F1 电量卡片 ----
@@ -816,9 +828,30 @@ function wireV2Events() {
   if (v2 && typeof v2.onRecurringFired === 'function') {
     v2.onRecurringFired((d) => { if (d && d.name) showToast('循环提醒', d.name); });
   }
+  // ===== v2.0 批次C：状态页事件绑定（F2/F3/F5/F7/F12）=====
+  on('btRefreshBtn', 'click', renderBtCard);
+  on('sunburstScanBtn', 'click', () => { renderSunburstCard(); });
+  // 隐私占用：忽略某 App（事件委托）
+  const pl = document.getElementById('privacyList');
+  if (pl) pl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-pignore]');
+    if (!btn) return;
+    await v2.privacyIgnore(btn.dataset.pignore);
+    renderPrivacyCard();
+  });
+  // 卸载器：选择应用 → 扫描残留 → 两步确认（事件委托）
+  const ul = document.getElementById('uninstallList');
+  if (ul) ul.addEventListener('click', async (e) => {
+    const scan = e.target.closest('[data-uscancan]');
+    if (scan) { await uninstallScan(scan.dataset.uscancan); return; }
+    const run = e.target.closest('[data-unrun]');
+    if (run) { uninstallRun(run.dataset.unrun); return; }
+    const cancel = e.target.closest('[data-uncancel]');
+    if (cancel) { const c = document.getElementById('uninstallConfirm'); if (c) c.hidden = true; }
+  });
 }
 
-// 渲染全部 v2.0 常用页卡片
+// 渲染全部 v2.0 常用页卡片（批次B）+ 状态页卡片（批次C）
 function renderV2Cards() {
   renderBatteryCard();
   renderRecurringCard();
@@ -826,6 +859,167 @@ function renderV2Cards() {
   renderClipImgCard();
   renderStashCard();
   renderSnippetCard();
+  // 批次C：状态页（常显，按 settings 开关决定是否拉数据）
+  renderPrivacyCard();
+  renderBtCard();
+  renderSunburstCard();
+  renderUninstallCard();
+}
+
+// ============ v2.0 批次C：状态页渲染（F2/F3/F5/F7/F12）============
+function fmtSize(n) {
+  if (n == null || !Number.isFinite(n) || n <= 0) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+// F2 隐私占用（摄像头 / 麦克风）
+async function renderPrivacyCard() {
+  const s = settings.privacy || {};
+  if (!s.monitor) { setText('privacyBrief', '未启用监控'); return; }
+  const r = await v2.privacyInfo();
+  const cam = (r && r.ok && r.cam) || [];
+  const mic = (r && r.ok && r.mic) || [];
+  const total = cam.length + mic.length;
+  const list = document.getElementById('privacyList');
+  if (!total) {
+    setText('privacyBrief', '未检测到摄像头 / 麦克风占用');
+    if (list) list.innerHTML = '';
+    return;
+  }
+  setText('privacyBrief', `${cam.length} 个摄像头 · ${mic.length} 个麦克风`);
+  if (!list) return;
+  list.innerHTML = [
+    ...cam.map((d) => `<div class="msg"><span>🎥 ${escHtml(d.name)}</span><button class="btn tiny" data-pignore="${escHtml(d.name)}">忽略</button></div>`),
+    ...mic.map((d) => `<div class="msg"><span>🎙 ${escHtml(d.name)}</span><button class="btn tiny" data-pignore="${escHtml(d.name)}">忽略</button></div>`),
+  ].join('');
+}
+
+// F3 蓝牙设备电量（AirPods 等）
+async function renderBtCard() {
+  const s = settings.bluetooth || {};
+  if (!s.enabled) { setText('btBrief', '· 已停用'); return; }
+  const r = await v2.btList();
+  const devices = (r && r.ok && r.devices) || [];
+  if (!devices.length) { setText('btBrief', '未发现蓝牙设备'); return; }
+  const btList = document.getElementById('btList');
+  if (!btList) return;
+  setText('btBrief', `${devices.length} 台设备`);
+  btList.innerHTML = devices.map((d) => {
+    const b = d.battery == null ? '—' : `${d.battery}%`;
+    const dot = d.connected ? '🟢' : '⚪';
+    return `<div class="msg"><span>${dot} ${escHtml(d.name)}</span><span class="m-val">${b}</span></div>`;
+  }).join('');
+}
+
+// F12 磁盘空间太阳图（原生 Canvas 2D，不引图表库）
+let sunburstTree = null;
+async function renderSunburstCard() {
+  const s = settings.sunburst || {};
+  if (!s.enabled) { setText('sunburstBrief', '—'); return; }
+  const r = await v2.sunburstScan();
+  if (!r || !r.ok || !r.tree) { setText('sunburstBrief', '扫描失败或进行中'); return; }
+  sunburstTree = r.tree;
+  setText('sunburstBrief', (r.cached ? '缓存 · ' : '') + '点击展开查看各目录占用');
+  drawSunburst(r.tree);
+}
+function drawSunburst(tree) {
+  const canvas = document.getElementById('sunburstCanvas');
+  const legend = document.getElementById('sunburstLegend');
+  if (!canvas || !tree) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W / 2, cy = H / 2;
+  const maxR = Math.min(W, H) / 2 - 4;
+  ctx.clearRect(0, 0, W, H);
+  // 顶层：根目录的直接子目录（每个占一个扇区，面积 = 大小占比）
+  const children = (tree.children || []).filter((c) => c.size > 0);
+  const total = children.reduce((a, c) => a + (c.size || 0), 0) || 1;
+  const PALETTE = ['#5b8ff9', '#5ad8a6', '#f6bd16', '#e8684a', '#6dc8ec', '#9270ca', '#ff9d4d', '#269a99', '#ff99c3', '#5d7092'];
+  let angle = -Math.PI / 2;
+  legend.innerHTML = '';
+  children.forEach((c, i) => {
+    const frac = (c.size || 0) / total;
+    const sweep = frac * Math.PI * 2;
+    const color = PALETTE[i % PALETTE.length];
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, maxR, angle, angle + sweep);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 图例
+    const name = c.name || '?';
+    const leg = document.createElement('div');
+    leg.className = 'legend';
+    leg.innerHTML = `<span class="lg-dot" style="background:${color}"></span>${escHtml(name)}<span class="lg-val">${fmtSize(c.size)} (${(frac * 100).toFixed(1)}%)</span>`;
+    legend.appendChild(leg);
+    angle += sweep;
+  });
+  // 中心圆
+  ctx.beginPath();
+  ctx.arc(cx, cy, maxR * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fill();
+}
+
+// F7 应用卸载器（两步确认：先 App 后残留）
+async function renderUninstallCard() {
+  const r = await v2.uninstallList();
+  const apps = (r && r.ok && r.apps) || [];
+  if (!apps.length) { setText('uninstallBrief', '未找到可卸载应用或扫描失败'); return; }
+  const list = document.getElementById('uninstallList');
+  if (!list) return;
+  setText('uninstallBrief', `${apps.length} 个应用（卸载只进废纸篓）`);
+  list.innerHTML = apps.map((a) => `
+    <div class="msg">
+      <span>${escHtml(a.name)}</span>
+      <span class="m-val">${a.running ? '运行中' : fmtSize(a.size)}</span>
+      <button class="btn tiny" data-uscancan="${escHtml(a.name)}">卸载</button>
+    </div>`).join('');
+}
+
+// 扫描某应用残留 → 两步确认（只进废纸篓）
+let uninstallPending = null; // { app, residuals }
+async function uninstallScan(name) {
+  const r = await v2.uninstallList();
+  const apps = (r && r.ok && r.apps) || [];
+  const app = apps.find((a) => a.name === name);
+  if (!app) { showToast('未找到应用', name); return; }
+  const sr = await v2.uninstallScan(app);
+  const residuals = (sr && sr.ok && sr.residuals) || [];
+  uninstallPending = { app, residuals };
+  const box = document.getElementById('uninstallConfirm');
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="confirm-title">卸载「${escHtml(app.name)}」？</div>
+    <div class="sub">将把 App${residuals.length ? ' 及 ' + residuals.length + ' 项残留' : ''}移入废纸篓，可随时恢复。</div>
+    <div>${residuals.map((re) => `<div class="msg">· ${escHtml(re.name)} (${fmtSize(re.size)})</div>`).join('')}</div>
+    <div class="row">
+      <button class="btn small" data-uncancel="1">取消</button>
+      <button class="btn small danger" data-unrun="1">确认卸载</button>
+    </div>`;
+}
+
+async function uninstallRun() {
+  if (!uninstallPending) return;
+  const { app, residuals } = uninstallPending;
+  const r = await v2.uninstallRun(app, residuals);
+  const box = document.getElementById('uninstallConfirm');
+  if (box) box.hidden = true;
+  if (r && r.ok) {
+    showToast('已卸载', `${app.name}${r.failed ? ` · ${r.failed} 项失败` : ''}`);
+  } else {
+    showToast('卸载失败', (r && r.error) || '请重试');
+  }
+  uninstallPending = null;
+  renderUninstallCard();
 }
 
 async function loadSettings() {

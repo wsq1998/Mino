@@ -31,6 +31,9 @@ const LANG = {
     'uninstall.done.body': '已移入废纸篓 {n} 项',
     'uninstall.failed.title': 'Mio · 卸载部分失败',
     'uninstall.failed.body': '失败 {n} 项，请手动处理',
+    // F5 开机启动项
+    'login.toggle.title': 'Mio · 启动项变更',
+    'login.toggle.body': '{name} 已{state}',
     // 中转站
     'stash.added.title': 'Mio · 已加入中转站',
     'stash.added.body': '{name}',
@@ -58,6 +61,8 @@ const LANG = {
     'uninstall.done.body': '{n} items moved to Trash',
     'uninstall.failed.title': 'Mio · Uninstall Partially Failed',
     'uninstall.failed.body': '{n} failed, please handle manually',
+    'login.toggle.title': 'Mio · Login Item Changed',
+    'login.toggle.body': '{name} {state}',
     'stash.added.title': 'Mio · Added to Stash',
     'stash.added.body': '{path}',
     'error.generic': 'Operation failed, please retry',
