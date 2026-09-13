@@ -14,6 +14,12 @@ const { stateFile, loadState, saveState } = require('./main/core/state.js');
 const { execP, runCmd, fetchJson, dirSize } = require('./main/core/exec.js');
 const { pomoFile, loadPomo, logPomo, pomoStats } = require('./main/core/pomo.js');
 const alarm = require('./main/core/alarm.js'); // v1.9 真正的闹钟/倒计时（主进程持久化）
+// ===== v2.0 批次B：常用页核心功能纯函数层 =====
+const recurring = require('./main/core/recurring.js'); // F4 循环提醒（规则解析/校验/到期推进）
+const ipnet = require('./main/core/ipnet.js');         // F6 网络 IP（内网/公网/复制）
+const stash = require('./main/core/stash.js');         // F10 文件暂存区（只存路径引用）
+const snippets = require('./main/core/snippets.js');   // F11 文本片段（明文落盘）
+const { LANG: I18N_LANG, resolveLang, t: i18nT } = require('./main/i18n.js'); // 通知文案 i18n
 const { LLM_PRESETS, LLM_PRICING, KEYCHAIN_SERVICE } = require('./main/llm/presets.js');
 const { WX_CODES, RAIN_CODES, SNOW_CODES } = require('./main/weather/codes.js');
 const { HOME, SCAN_TARGETS, isBlacklistedPath } = require('./main/clean/targets.js');
@@ -31,6 +37,10 @@ let win = null;
 let cursorTimer = null;
 let samplerTimer = null;
 let alarmTimer = null; // v1.9 倒计时 tick
+// ===== v2.0 批次B：常用页轮询状态 =====
+let batteryTimer = null;        // F1 电量提醒轮询（60s）
+let batteryNotifiedLevel = null; // F1 已提醒过的电量档位（内存 + 落盘，跨重启防重复打扰）
+let recurringTimer = null;      // F4 循环提醒轮询（60s，到点触发）
 
 // ============ v1.5：设置中心 ============
 // settings 自 v1.5 起带版本号（_v）。升级靠 deepMerge 而非逐版 migration 函数：
@@ -2447,6 +2457,9 @@ app.whenReady().then(() => {
   // v1.9：真正的闹钟/倒计时 —— 主进程 1s tick，到点触发（持久化保证重启不丢）
   alarmTimer = setInterval(() => alarm.tick(), 1000);
 
+  // v2.0 批次B：常用页轮询（F1 电量提醒 60s / F4 循环提醒 60s）
+  startV2Polling();
+
   // 自动化自检模式：MIO_AUTOTEST=1 时走查核心交互并截图留证
   if (process.env.MIO_AUTOTEST === '1') {
     const shotsDir = path.join(__dirname, 'docs', 'shots');
@@ -3282,12 +3295,193 @@ app.on('will-quit', () => {
   if (stealthTimer) clearInterval(stealthTimer);
   if (weatherTimer) clearInterval(weatherTimer);
   if (alarmTimer) clearInterval(alarmTimer); // v1.9 倒计时 tick
+  if (batteryTimer) clearInterval(batteryTimer); // v2.0 F1 电量提醒
+  if (recurringTimer) clearInterval(recurringTimer); // v2.0 F4 循环提醒
   stopClip(); // v1.6：停轮询，内存里的剪贴板历史随进程一起消失
 });
 
 // ============ v2.0 批次B：常用页核心功能装配 ============
 // 最小可验证步进：v2-ping 探活通道（渲染层 window.mio.v2.ping 调用）
 ipcMain.handle('v2-ping', () => ({ ok: true, pong: Date.now() }));
+
+// ---- F1 电量提醒（60s 轮询；低电量→提醒充电；充满且未拔→提醒拔电）----
+// 免打扰判据：健康提醒的免打扰时段（quietFrom ~ quietTo，跨零点）
+function v2InQuietHours() {
+  const h = getSettings().health || {};
+  const from = Number(h.quietFrom);
+  const to = Number(h.quietTo);
+  const now = new Date().getHours();
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
+  if (from === to) return false; // 同值视为不启用
+  return from < to ? (now >= from && now < to) : (now >= from || now < to);
+}
+
+// 电量提醒主逻辑：只在电量档位「越过阈值」时提醒一次，避免每 60s 轰炸
+function batteryTick() {
+  const s = getSettings().battery || {};
+  if (!s.enabled) return;
+  const info = batteryInfo();
+  if (!info) return; // 台式机无电池，静默
+  if (v2InQuietHours()) return; // 免打扰时段静默
+  const lang = resolveLang(getSettings().general.lang);
+  const pct = info.pct;
+  const low = Number(s.low) || 20;
+  const full = Number(s.full) || 80;
+  // 低电量：首次进入该档位（或从更低档回升后再次进入）才提醒
+  if (pct <= low && !info.charging) {
+    if (batteryNotifiedLevel !== 'low') {
+      batteryNotifiedLevel = 'low';
+      const title = i18nT('battery.low.title', { lang });
+      const body = i18nT('battery.low.body', { lang, vars: { level: pct } });
+      logMessage(title, body);
+      new Notification({ title, body, silent: false }).show();
+    }
+    return;
+  }
+  // 满电：达到阈值且未拔电源才提醒（离开满电档后重置，下次充满再提醒）
+  if (pct >= full && info.charging) {
+    if (batteryNotifiedLevel !== 'full') {
+      batteryNotifiedLevel = 'full';
+      const title = i18nT('battery.full.title', { lang });
+      const body = i18nT('battery.full.body', { lang, vars: { level: pct } });
+      logMessage(title, body);
+      new Notification({ title, body, silent: false }).show();
+    }
+    return;
+  }
+  // 中间档：重置已提醒状态（下次再进低/满档会重新提醒）
+  if (batteryNotifiedLevel !== null && pct > low && pct < full) {
+    batteryNotifiedLevel = null;
+  }
+}
+
+// ---- F4 循环提醒（60s 轮询；到点发系统通知 + 广播；重启不补跑）----
+function recurringTick() {
+  const s = getSettings().recurring || {};
+  const items = Array.isArray(s.items) ? s.items : [];
+  if (!items.length) return;
+  if (v2InQuietHours()) return;
+  const { due, items: nextItems } = recurring.dueItems(items, Date.now());
+  if (!due.length) return;
+  // 推进 nextTs 并落盘（settings 里存的是同一份数组，直接回写）
+  patchSettings({ recurring: { items: nextItems } });
+  const lang = resolveLang(getSettings().general.lang);
+  due.forEach((d) => {
+    const title = i18nT('recurring.fire.title', { lang });
+    const body = i18nT('recurring.fire.body', { lang, vars: { name: d.name || d.rule || '' } });
+    logMessage(title, body);
+    new Notification({ title, body, silent: false }).show();
+    if (win && !win.isDestroyed()) {
+      try { win.webContents.send('recurring-fired', { id: d.id, name: d.name, rule: d.rule }); } catch {}
+    }
+  });
+}
+
+// F4 IPC：列表 / 新增 / 更新 / 删除（CRUD 都走 settings.recurring.items）
+ipcMain.handle('v2-recurring-list', () => {
+  const items = (getSettings().recurring && getSettings().recurring.items) || [];
+  return { ok: true, items: recurring.listItems(items) };
+});
+ipcMain.handle('v2-recurring-add', (_e, payload) => {
+  const items = (getSettings().recurring && getSettings().recurring.items) || [];
+  const r = recurring.addItem(items, payload || {});
+  if (r.ok) patchSettings({ recurring: { items: r.items } });
+  return r;
+});
+ipcMain.handle('v2-recurring-set', (_e, payload) => {
+  const items = (getSettings().recurring && getSettings().recurring.items) || [];
+  const r = recurring.updateItem(items, payload && payload.id, payload || {});
+  if (r.ok) patchSettings({ recurring: { items: r.items } });
+  return r;
+});
+ipcMain.handle('v2-recurring-remove', (_e, payload) => {
+  const items = (getSettings().recurring && getSettings().recurring.items) || [];
+  const r = recurring.removeItem(items, payload && payload.id);
+  if (r.ok) patchSettings({ recurring: { items: r.items } });
+  return r;
+});
+
+// ---- F6 网络 IP（内网 ipconfig / 公网 api.ip.sb，24h 缓存）----
+ipcMain.handle('v2-net-info', async () => {
+  const s = getSettings().network || {};
+  if (!s.enabled) return { ok: true, enabled: false, lan: '', wan: '' };
+  const lan = await ipnet.lanIp();
+  const wan = await ipnet.publicIp();
+  return { ok: true, enabled: true, lan, wan };
+});
+ipcMain.handle('v2-net-copy', (_e, payload) => {
+  const ok = ipnet.copy(payload && payload.ip);
+  return { ok, copied: ok };
+});
+
+// ---- F8 窗口分屏（osascript System Events；无辅助功能权限 → 降级引导）----
+function splitWindow(which) {
+  const trusted = accessibilityTrusted(false);
+  if (!trusted) return { ok: false, need: 'accessibility', degraded: true, error: '需要辅助功能权限' };
+  const scripts = {
+    left: 'tell application "System Events" to set position of front window of process "Mio" to {0, 0}',
+    right: 'tell application "System Events" to set position of front window of process "Mio" to {720, 0}',
+    top: 'tell application "System Events" to set position of front window of process "Mio" to {0, 0}',
+    bottom: 'tell application "System Events" to set position of front window of process "Mio" to {0, 400}',
+  };
+  const script = scripts[which];
+  if (!script) return { ok: false, error: '未知分屏方向' };
+  try {
+    execFileSync('/usr/bin/osascript', ['-e', script], { timeout: 4000 });
+    return { ok: true, which, degraded: false };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err).slice(0, 120), degraded: false };
+  }
+}
+ipcMain.handle('v2-split', (_e, payload) => {
+  const s = getSettings().split || {};
+  if (!s.enabled) return { ok: false, error: '分屏未启用' };
+  return splitWindow(payload && payload.which);
+});
+
+// ---- F9 剪贴板图片历史：v2 桥只做透传（图片采集/取回已在 v1.7.6 实现）----
+ipcMain.handle('v2-clip-image-list', () => {
+  const items = clipSnapshot().items.filter((i) => i.type === 'image');
+  return { ok: true, items };
+});
+
+// ---- F10 文件暂存区（只存路径引用，绝不移动/复制/删除源文件）----
+ipcMain.handle('v2-stash-list', () => ({ ok: true, items: stash.list() }));
+ipcMain.handle('v2-stash-add', (_e, payload) => {
+  const r = stash.add(payload || {});
+  if (r.ok) {
+    const name = r.item ? r.item.name : '';
+    const lang = resolveLang(getSettings().general.lang);
+    const title = i18nT('stash.added.title', { lang });
+    const body = i18nT('stash.added.body', { lang, vars: { name } });
+    logMessage(title, body);
+  }
+  return r;
+});
+ipcMain.handle('v2-stash-remove', (_e, payload) => stash.remove(payload && payload.id));
+ipcMain.handle('v2-stash-clear', () => stash.clear());
+
+// ---- F11 文本片段（明文落盘，UI 需披露）----
+ipcMain.handle('v2-snippet-list', () => ({ ok: true, items: snippets.list() }));
+ipcMain.handle('v2-snippet-save', (_e, payload) => snippets.add(payload || {}));
+ipcMain.handle('v2-snippet-remove', (_e, payload) => snippets.remove(payload && payload.id));
+ipcMain.handle('v2-snippet-insert', (_e, payload) => {
+  const r = snippets.insert(payload && payload.id);
+  if (r.ok) {
+    try { clipboard.writeText(r.text); } catch { return { ok: false, error: '写入剪贴板失败' }; }
+  }
+  return r;
+});
+
+// 启动轮询：whenReady 里调用；willQuit 里清理
+function startV2Polling() {
+  // F1 电量：60s 一次（启动先跑一次，让状态即时可用）
+  batteryTick();
+  batteryTimer = setInterval(batteryTick, 60000);
+  // F4 循环提醒：60s 一次（到点即触发；重启不补跑）
+  recurringTick();
+  recurringTimer = setInterval(recurringTick, 60000);
+}
 
 // 桌宠不需要 dock 图标与多窗口
 app.dock?.hide();
