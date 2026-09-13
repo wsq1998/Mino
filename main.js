@@ -3304,6 +3304,13 @@ app.on('will-quit', () => {
 // 最小可验证步进：v2-ping 探活通道（渲染层 window.mio.v2.ping 调用）
 ipcMain.handle('v2-ping', () => ({ ok: true, pong: Date.now() }));
 
+// ---- F1 电量提醒：渲染层卡片主动拉取当前电池状态（pct/charging/timeRemaining）----
+ipcMain.handle('v2-battery-info', () => {
+  const info = batteryInfo();
+  if (!info) return { ok: true, present: false };
+  return { ok: true, present: true, pct: info.pct, charging: info.charging };
+});
+
 // ---- F1 电量提醒（60s 轮询；低电量→提醒充电；充满且未拔→提醒拔电）----
 // 免打扰判据：健康提醒的免打扰时段（quietFrom ~ quietTo，跨零点）
 function v2InQuietHours() {

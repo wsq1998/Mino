@@ -107,4 +107,32 @@ contextBridge.exposeInMainWorld('mio', {
   onAlarmFired: (cb) => ipcRenderer.on('alarm-fired', (_e, d) => cb(d)),
   // 快捷启动 App：open -a <name>
   appLaunch: (name) => ipcRenderer.invoke('app-launch', name),
+  // ===== v2.0 新增（F1/F4/F6/F8/F9/F10/F11 常用页核心）=====
+  v2: {
+    // F1 电量提醒：探测电池信息（pct / charging / timeRemaining）
+    batteryInfo: () => ipcRenderer.invoke('v2-battery-info'),
+    // F4 循环提醒：CRUD（列表/新增/更新/删除）
+    recurringList: () => ipcRenderer.invoke('v2-recurring-list'),
+    recurringAdd: (payload) => ipcRenderer.invoke('v2-recurring-add', payload || {}),
+    recurringSet: (payload) => ipcRenderer.invoke('v2-recurring-set', payload || {}),
+    recurringRemove: (id) => ipcRenderer.invoke('v2-recurring-remove', { id }),
+    onRecurringFired: (cb) => ipcRenderer.on('recurring-fired', (_e, d) => cb(d)),
+    // F6 网络 IP：内网/公网 + 一键复制
+    netInfo: () => ipcRenderer.invoke('v2-net-info'),
+    netCopy: (ip) => ipcRenderer.invoke('v2-net-copy', { ip }),
+    // F8 窗口分屏：四向
+    split: (which) => ipcRenderer.invoke('v2-split', { which }),
+    // F9 剪贴板图片历史（透传 v1.7.6 已采集的图片项）
+    clipImageList: () => ipcRenderer.invoke('v2-clip-image-list'),
+    // F10 文件暂存区：CRUD（只存路径引用）
+    stashList: () => ipcRenderer.invoke('v2-stash-list'),
+    stashAdd: (payload) => ipcRenderer.invoke('v2-stash-add', payload || {}),
+    stashRemove: (id) => ipcRenderer.invoke('v2-stash-remove', id),
+    stashClear: () => ipcRenderer.invoke('v2-stash-clear'),
+    // F11 文本片段：CRUD + 插入剪贴板
+    snippetList: () => ipcRenderer.invoke('v2-snippet-list'),
+    snippetSave: (payload) => ipcRenderer.invoke('v2-snippet-save', payload || {}),
+    snippetRemove: (id) => ipcRenderer.invoke('v2-snippet-remove', id),
+    snippetInsert: (id) => ipcRenderer.invoke('v2-snippet-insert', id),
+  },
 });
