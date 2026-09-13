@@ -622,6 +622,9 @@ const v2 = (bridge && bridge.v2) || {
   uninstallRun: async () => ({ ok: true, moved: 0, failed: 0 }),
   sunburstScan: async () => ({ ok: true, tree: null }),
   sunburstCancel: async () => ({ ok: true }),
+  // 批次D mock：设置备份
+  backupExport: async () => ({ ok: true, filePath: '/tmp/mio-backup.json' }),
+  backupImport: async () => ({ ok: true, filePath: '/tmp/mio-backup.json' }),
 };
 
 // ---- F1 电量卡片 ----
@@ -848,6 +851,23 @@ function wireV2Events() {
     if (run) { uninstallRun(run.dataset.unrun); return; }
     const cancel = e.target.closest('[data-uncancel]');
     if (cancel) { const c = document.getElementById('uninstallConfirm'); if (c) c.hidden = true; }
+  });
+  // ===== v2.0 批次D：F13 设置备份 =====
+  on('backupExportBtn', 'click', async () => {
+    const r = await v2.backupExport();
+    const box = document.getElementById('backupResult');
+    if (!box) return;
+    if (r && r.ok) box.textContent = `已导出 → ${r.filePath}`;
+    else if (r && r.canceled) box.textContent = '';
+    else box.textContent = '导出失败：' + ((r && r.error) || '请重试');
+  });
+  on('backupImportBtn', 'click', async () => {
+    const r = await v2.backupImport();
+    const box = document.getElementById('backupResult');
+    if (!box) return;
+    if (r && r.ok) { box.textContent = `已导入 → ${r.filePath}`; loadSettings(); }
+    else if (r && r.canceled) box.textContent = '';
+    else box.textContent = '导入失败：' + ((r && r.error) || '请重试');
   });
 }
 

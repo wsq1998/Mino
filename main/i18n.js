@@ -34,6 +34,9 @@ const LANG = {
     // F5 开机启动项
     'login.toggle.title': 'Mio · 启动项变更',
     'login.toggle.body': '{name} 已{state}',
+    // F13 设置备份
+    'backup.imported.title': 'Mio · 设置已导入',
+    'backup.imported.body': '设置已合并恢复',
     // 中转站
     'stash.added.title': 'Mio · 已加入中转站',
     'stash.added.body': '{name}',
@@ -63,6 +66,8 @@ const LANG = {
     'uninstall.failed.body': '{n} failed, please handle manually',
     'login.toggle.title': 'Mio · Login Item Changed',
     'login.toggle.body': '{name} {state}',
+    'backup.imported.title': 'Mio · Settings Imported',
+    'backup.imported.body': 'Settings merged & restored',
     'stash.added.title': 'Mio · Added to Stash',
     'stash.added.body': '{path}',
     'error.generic': 'Operation failed, please retry',

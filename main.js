@@ -1,5 +1,5 @@
 // Mio - macOS 桌面陪伴机器人 · 主进程
-const { app, BrowserWindow, ipcMain, Menu, Notification, globalShortcut, screen, shell, clipboard, systemPreferences, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, Notification, globalShortcut, screen, shell, clipboard, systemPreferences, nativeImage, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -3691,6 +3691,53 @@ ipcMain.handle('v2-sunburst-scan', async () => {
   }
 });
 ipcMain.handle('v2-sunburst-cancel', () => ({ ok: true, canceled: sunburst.cancel() }));
+
+// ===================== v2.0 批次D：F13 设置备份导出/导入 =====================
+// 导出：把当前设置树写入用户选择的 JSON 文件（含版本号，便于迁移）
+ipcMain.handle('v2-backup-export', async () => {
+  try {
+    const s = getSettings();
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '导出 Mio 设置',
+      defaultPath: `Mio-settings-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+    const payload = {
+      app: 'Mio',
+      version: s.version || '2.0',
+      exportedAt: new Date().toISOString(),
+      settings: s,
+    };
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+    return { ok: true, filePath };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+// 导入：读取 JSON，深合并进当前设置（只接受合法结构，失败不破坏现有设置）
+ipcMain.handle('v2-backup-import', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '导入 Mio 设置',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+    const raw = fs.readFileSync(filePaths[0], 'utf8');
+    let data;
+    try { data = JSON.parse(raw); } catch { return { ok: false, error: '文件不是合法 JSON' }; }
+    const incoming = data && data.settings && typeof data.settings === 'object' ? data.settings : data;
+    if (!incoming || typeof incoming !== 'object') return { ok: false, error: '设置结构无效' };
+    const merged = deepMerge(getSettings(), incoming);
+    patchSettings(merged);
+    const lang = resolveLang(getSettings().general.lang);
+    logMessage(i18nT('backup.imported.title', { lang }), i18nT('backup.imported.body', { lang }));
+    return { ok: true, filePath: filePaths[0] };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
 
 // 桌宠不需要 dock 图标与多窗口
 app.dock?.hide();

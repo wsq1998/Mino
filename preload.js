@@ -151,5 +151,8 @@ contextBridge.exposeInMainWorld('mio', {
     // F12 磁盘太阳图：扫描 + 中止
     sunburstScan: () => ipcRenderer.invoke('v2-sunburst-scan'),
     sunburstCancel: () => ipcRenderer.invoke('v2-sunburst-cancel'),
+    // F13 设置备份：导出 / 导入（JSON，deepMerge 合并恢复）
+    backupExport: () => ipcRenderer.invoke('v2-backup-export'),
+    backupImport: () => ipcRenderer.invoke('v2-backup-import'),
   },
 });
