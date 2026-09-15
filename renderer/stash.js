@@ -49,7 +49,30 @@
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => { toastEl.hidden = true; }, 1600);
     }
-    return { esc, fmtSize, flash };
+    // v2.14 一键清空：两步确认的「待确认」态控制（list 与 head 两个模块共用）。
+    //   armClear —— 按钮变「确认清空?」并进入 armed 态，3s 无操作自动复位；
+    //   disarmClear —— 复位为普通垃圾桶图标（清空完成 / 列表清空 / 失焦时调用）。
+    function armClear() {
+      const el = state.clearBtn;
+      if (!el || el.hidden) return;
+      state.clearArmed = true;
+      el.classList.add('armed');
+      el.textContent = '确认?';
+      el.setAttribute('title', '再点一次确认清空（只移除引用，文件进废纸篓）');
+      clearTimeout(state.clearArmTimer);
+      state.clearArmTimer = setTimeout(disarmClear, 3000);
+    }
+    function disarmClear() {
+      const el = state.clearBtn;
+      clearTimeout(state.clearArmTimer);
+      state.clearArmTimer = null;
+      if (!el) return;
+      state.clearArmed = false;
+      el.classList.remove('armed');
+      el.textContent = '🗑';
+      el.setAttribute('title', '清空中转站（只移除引用，文件进废纸篓）');
+    }
+    return { esc, fmtSize, flash, armClear, disarmClear };
   })();
 
   // ============================================================
@@ -63,6 +86,7 @@
     countEl: document.getElementById('stCount'),
     pinBtn: document.getElementById('stPinBtn'),
     addBtn: document.getElementById('stAddBtn'),
+    clearBtn: document.getElementById('stClearBtn'),
     collapseBtn: document.getElementById('stCollapseBtn'),
     expandBtn: document.getElementById('stExpandBtn'),
     capsuleEl: document.getElementById('stCapsule'),
@@ -81,6 +105,9 @@
     dragExpandRequested: false,
     warmSentId: null,
     ctxId: null,
+    // v2.14 一键清空：两步确认的「待确认」态（armed 后再点一次才真正清空）
+    clearArmed: false,
+    clearArmTimer: null,
   };
 
   // ============================================================
@@ -208,7 +235,7 @@
   // ============================================================
   const list = (() => {
     const { listEl, countEl, capCountEl, emptyEl, expandBtn, root } = state;
-    const { esc, fmtSize } = util;
+    const { esc, fmtSize, disarmClear } = util;
     const LIST_ROW_H = 60; // 与 stash.css --st-list-row-h 保持一致（紧凑横排条目估算高度）
     const LIST_MAX_H = LIST_ROW_H * 2 + 12; // 默认 2 行（含 padding 余量）
 
@@ -245,6 +272,11 @@
       }
       if (countEl) countEl.textContent = `${n} 项`;
       if (emptyEl) emptyEl.hidden = n > 0;
+      // v2.14 一键清空：无条目时隐藏清空按钮；有条目时展示（清空后自动复位待确认态）
+      if (state.clearBtn) {
+        state.clearBtn.hidden = n === 0;
+        if (n === 0) disarmClear();
+      }
       if (!listEl) return;
       if (n === 0) { listEl.innerHTML = ''; setListExpanded(false); if (expandBtn) expandBtn.hidden = true; return; }
 
@@ -495,8 +527,8 @@
   // [8] 头部按钮模块 —— 钉住 / 选择 / 展开 / 收起
   // ============================================================
   const head = (() => {
-    const { capsuleEl, collapseBtn, expandBtn, addBtn, pinBtn } = state;
-    const { flash } = util;
+    const { capsuleEl, collapseBtn, expandBtn, addBtn, pinBtn, clearBtn } = state;
+    const { flash, armClear, disarmClear } = util;
 
     function openPanel() { if (v2 && v2.stashPanelShow) v2.stashPanelShow(); }
 
@@ -524,6 +556,18 @@
         if (!v2) return;
         const r = await v2.stashPanelPin(!state.pinned);
         if (r) { panel.applyMode({ mode: r.pinned ? 'open' : state.mode, pinned: !!r.pinned }); }
+      });
+      // v2.14 一键清空中转站：两步确认（防误触）。首次点击进入「确认?」armed 态，
+      // 3s 无操作自动复位；armed 态下再点一次才真正清空（只移除引用，副本进废纸篓）。
+      if (clearBtn) clearBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!v2) return;
+        if (clearBtn.hidden || state.items.length === 0) return;
+        if (!state.clearArmed) { armClear(); return; }
+        disarmClear();
+        const r = await v2.stashClear();
+        if (r && r.items) list.renderList(r.items);
+        flash(r && r.ok ? '已清空中转站（文件已移入废纸篓）' : ((r && r.error) || '清空失败'));
       });
     }
 

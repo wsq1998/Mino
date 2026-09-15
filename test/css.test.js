@@ -207,3 +207,32 @@ test('stash.css v2.11.1：货架态 .st-item 按内容高度排列（flex: 0 0 a
 test('stash.html v2.9：存在展开按钮 #stExpandBtn', () => {
   assert.match(rawHtml, /id=["']stExpandBtn["']/, 'stash.html 缺少 id="stExpandBtn" 展开按钮');
 });
+
+// ============ v2.14 一键清空中转站守卫 ============
+
+test('stash.html v2.14：存在清空按钮 #stClearBtn（一键清空中转站）', () => {
+  assert.match(rawHtml, /id=["']stClearBtn["']/, 'stash.html 缺少 id="stClearBtn" 清空按钮');
+});
+
+test('stash.html v2.14：#stClearBtn 默认 hidden（无条目时隐藏，避免空态误触）', () => {
+  const btnRe = /<button[^>]*id=["']stClearBtn["'][^>]*>/;
+  const m = btnRe.exec(rawHtml);
+  assert.ok(m, '找不到 #stClearBtn 按钮标签');
+  assert.match(m[0], /hidden/, '#stClearBtn 必须带 hidden 属性（默认隐藏，有条目时由 stash.js 显示）');
+});
+
+test('stash.css v2.14：清空按钮有危险色 hover 态（.st-ic--clear:hover 用 --mi-danger）', () => {
+  const clearRules = allRules.filter((r) => r.selector.includes('.st-ic--clear'));
+  assert.ok(clearRules.length > 0, '缺少 .st-ic--clear 清空按钮规则');
+  const hover = clearRules.find((r) => r.selector.includes(':hover'));
+  assert.ok(hover, '缺少 .st-ic--clear:hover 悬停态');
+  assert.match(hover.body, /--mi-danger/, '.st-ic--clear:hover 必须用危险色 --mi-danger（警示不可逆操作）');
+});
+
+test('stash.css v2.14：清空按钮有待确认 armed 态（.st-ic--clear.armed 引用 --mi-danger）', () => {
+  const armedRules = allRules.filter((r) => r.selector.includes('.st-ic--clear.armed'));
+  assert.ok(armedRules.length > 0, '缺少 .st-ic--clear.armed 待确认态规则');
+  for (const r of armedRules) {
+    assert.match(r.body, /var\(--mi-danger\)/, `${r.selector} 必须引用 --mi-danger（armed 态高亮警示）`);
+  }
+});

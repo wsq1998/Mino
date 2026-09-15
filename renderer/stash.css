@@ -150,6 +150,9 @@ html, body {
 }
 .st-ic:hover { background: color-mix(in srgb, var(--mi-accent) 20%, transparent); color: var(--mi-tx1); }
 .st-ic.on { background: color-mix(in srgb, var(--mi-accent) 30%, transparent); border-color: var(--mi-accent); color: var(--mi-tx1); }
+/* v2.14 一键清空中转站按钮：危险操作，悬停/待确认态用危险色（--mi-danger），警示不可逆 */
+.st-ic--clear:hover { background: color-mix(in srgb, var(--mi-danger) 22%, transparent); color: var(--mi-danger); border-color: color-mix(in srgb, var(--mi-danger) 40%, transparent); }
+.st-ic--clear.armed { background: color-mix(in srgb, var(--mi-danger) 30%, transparent); color: var(--mi-danger); border-color: var(--mi-danger); }
 /* v2.9 展开列表按钮：复用 .st-ic，展开态高亮 */
 .st--expanded #stExpandBtn { background: color-mix(in srgb, var(--mi-accent) 30%, transparent); border-color: var(--mi-accent); color: var(--mi-tx1); }
 

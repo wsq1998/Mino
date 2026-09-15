@@ -23,6 +23,8 @@
         <span class="st-title">中转站</span>
         <span class="st-count" id="stCount">0 项</span>
         <span class="st-spacer"></span>
+        <!-- v2.14 一键清空中转站：两步确认（先点变「确认清空?」，再点执行）。仅当有条目时可见（stash.js 控制 hidden）。 -->
+        <button class="st-ic st-ic--clear" id="stClearBtn" type="button" title="清空中转站（只移除引用，文件进废纸篓）" aria-label="清空中转站" hidden>🗑</button>
         <button class="st-ic" id="stPinBtn" type="button" title="钉住（展开后不自动收起）" aria-label="钉住">📌</button>
         <button class="st-ic" id="stAddBtn" type="button" title="选择文件加入" aria-label="选择文件">＋</button>
         <!-- v2.9 展开/收起列表：仅当条目超过 2 行时可见（stash.js 控制 hidden） -->
