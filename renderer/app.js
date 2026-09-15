@@ -156,6 +156,10 @@ const api = bridge || {
   cleanPaths: async (entries) => entries.map((e) => ({ path: e.path, ok: true })),
   // ===== v1.5 降级 mock =====
   getSettings: async () => previewSettings,
+  // v2.1 中转站浮窗（预览降级）
+  onOpenSettings: () => {},
+  stashHotkeyRecord: async (accelerator) => ({ ok: true, hotkey: accelerator }),
+  stashHotkeyReset: async () => ({ ok: true, hotkey: 'Alt+Shift+Space' }),
   setSettings: async (patch) => {
     Object.assign(previewSettings, previewMerge(previewSettings, patch));
     return previewSettings;
@@ -494,6 +498,25 @@ function renderSettings() {
   set('swBt', (settings.bluetooth || {}).enabled);
   set('swSunburst', (settings.sunburst || {}).enabled);
   set('swPrivacy', (settings.privacy || {}).monitor);
+  // v2.1 中转站浮窗：开关回填 + 胶囊不透明度 + 快捷键显示
+  const sp = settings.stash || {};
+  set('swStashPanel', sp.panelEnabled !== false);
+  set('swStashEdge', sp.edgeHot !== false);
+  set('swStashDragAuto', sp.dragAutoShow !== false);
+  set('swStashTray', sp.trayEnabled !== false);
+  if (el('selStashEdge')) el('selStashEdge').value = sp.edgeSide || 'right'; // v2.3 触发方向回填
+  const spOpacity = typeof sp.capsuleOpacity === 'number' ? sp.capsuleOpacity : 0.6;
+  if (el('stashOpacityVal')) el('stashOpacityVal').textContent = `${Math.round(spOpacity * 100)}%`;
+  if (el('rngStashOpacity')) el('rngStashOpacity').value = String(Math.round(spOpacity * 100));
+  if (el('stashDirText')) el('stashDirText').textContent = sp.dir ? sp.dir : '默认（下载/Mio中转站）'; // v2.5 存放目录回填
+  const skr = el('stashKeyRec');
+  if (skr && !skr.classList.contains('recording')) skr.textContent = accelLabel(sp.hotkey || 'Alt+Shift+Space');
+  // F1 电量提醒：阈值滑块与当前值回填（开关已并入「电量提醒」组）
+  const bat = settings.battery || {};
+  if (el('batteryLowVal')) el('batteryLowVal').textContent = `${bat.low || 20}%`;
+  if (el('rngBatteryLow')) el('rngBatteryLow').value = String(bat.low || 20);
+  if (el('batteryFullVal')) el('batteryFullVal').textContent = `${bat.full || 80}%`;
+  if (el('rngBatteryFull')) el('rngBatteryFull').value = String(bat.full || 80);
   const segWxM = el('segWxMode');
   const wxMode = wx.city ? 'manual' : 'auto';
   if (segWxM) [...segWxM.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.v === wxMode));
@@ -534,11 +557,27 @@ function renderSettings() {
     clipboard: settings.clipboard.enabled ? `开 · ${settings.clipboard.limit} 条${settings.clipboard.filterPassword ? ' · 过滤' : ''}` : '关',
     hotkey: accelLabel(settings.hotkey.trigger),
     weather: wx.enabled ? `${wx.city || '自动定位'} · ${wx.interval} 分` : '关',
-    tools: `${[settings.countdown.enabled && '倒计时', settings.launcher.enabled && '快捷启动', settings.pomodoro.enabled && '番茄钟'].filter(Boolean).join(' · ') || '全关'}`,
+    battery: (() => {
+      const b = settings.battery || {};
+      return b.enabled ? `开 · 低 ${b.low || 20}% / 满 ${b.full || 80}%` : '关';
+    })(),
+    tools: (() => {
+      const on = [
+        settings.countdown.enabled, settings.launcher.enabled, settings.pomodoro.enabled,
+        (settings.network || {}).enabled, (settings.split || {}).enabled,
+        (settings.clipboard || {}).imageHistory, (settings.stash || {}).enabled,
+        (settings.bluetooth || {}).enabled, (settings.sunburst || {}).enabled, (settings.privacy || {}).monitor,
+      ].filter(Boolean).length;
+      return on ? `开 ${on} 项` : '全关';
+    })(),
     perm: permBrief(),
     data: settingsMeta.userDataPath ? '全部在本机' : '—',
     about: settingsMeta.version ? `v${settingsMeta.version}` : '—',
     ai: ai.enabled ? `${LLM_PRESETS_MAP[ai.provider] ? LLM_PRESETS_MAP[ai.provider].label : '自定义'} · ${ai.model || '未填模型'}` : '关',
+    stashpanel: (() => {
+      const s = settings.stash || {};
+      return `${s.panelEnabled !== false ? '胶囊常驻' : '仅呼出'} · ${s.hotkey ? accelLabel(s.hotkey) : '无快捷键'}${s.trayEnabled !== false ? ' · 菜单栏' : ''}`;
+    })(),
   };
   Object.keys(briefs).forEach((k) => {
     const node = el(`sgBrief-${k}`);
@@ -560,10 +599,10 @@ function applyFeatureVisibility() {
   if (pomoStatCard) pomoStatCard.hidden = !settings.pomodoro.enabled;
   // ===== v2.0 批次B：新功能卡片显示/隐藏（跟随设置开关）=====
   const show = (id, on) => { const el = document.getElementById(id); if (el) el.hidden = !on; };
-  show('batteryCard', (settings.battery || {}).enabled);
   show('netCard', (settings.network || {}).enabled);
   show('splitCard', (settings.split || {}).enabled);
-  show('clipImgCard', (settings.clipboard || {}).imageHistory);
+  // F9 图片历史已并入「剪贴板」卡片：开关只控制卡片内图片分区显隐
+  show('clipImgSection', (settings.clipboard || {}).imageHistory);
   show('stashCard', (settings.stash || {}).enabled);
 }
 
@@ -595,15 +634,24 @@ function renderLaunchItemList() {
 // ============ v2.0 批次B：常用页新功能（F1/F4/F6/F8/F9/F10/F11）============
 const v2 = (bridge && bridge.v2) || {
   // 浏览器预览降级 mock（字段与主进程返回对齐）
-  batteryInfo: async () => ({ ok: true, present: true, pct: 76, charging: false }),
   netInfo: async () => ({ ok: true, enabled: true, lan: '192.168.1.23', wan: '1.2.3.4' }),
   netCopy: async () => ({ ok: true }),
   split: async () => ({ ok: true }),
-  clipImageList: async () => ({ ok: true, items: [] }),
   stashList: async () => ({ ok: true, items: [] }),
   stashAdd: async () => ({ ok: true, items: [] }),
   stashRemove: async () => ({ ok: true, items: [] }),
   stashClear: async () => ({ ok: true }),
+  // v2.1 中转站浮窗 mock
+  stashDragOut: () => {}, stashDragEnd: () => {},
+  stashReveal: async () => ({ ok: true }),
+  stashOpen: async () => ({ ok: true }),
+  stashCopyPath: async () => ({ ok: true }),
+  stashPick: async () => ({ ok: true, items: [] }),
+  stashPanelState: async () => ({ ok: true, mode: 'capsule', pinned: false, side: 'right' }),
+  stashPanelToggle: () => {}, stashPanelShow: () => {}, stashPanelHide: () => {},
+  stashPanelPin: async (pinned) => ({ ok: true, pinned: !!pinned }),
+  stashPanelHover: () => {},
+  onStashChanged: () => {}, onStashPanelMode: () => {},
   // 批次C mock：状态页（F2/F3/F5/F7/F12）
   privacyInfo: async () => ({ ok: true, cam: [], mic: [] }),
   privacyIgnore: async () => ({ ok: true }),
@@ -620,27 +668,6 @@ const v2 = (bridge && bridge.v2) || {
   backupExport: async () => ({ ok: true, filePath: '/tmp/mio-backup.json' }),
   backupImport: async () => ({ ok: true, filePath: '/tmp/mio-backup.json' }),
 };
-
-// ---- F1 电量卡片 ----
-async function renderBatteryCard() {
-  const card = document.getElementById('batteryCard');
-  if (!card || card.hidden) return;
-  try {
-    const r = await v2.batteryInfo();
-    if (!r || !r.ok) { setText('batteryValue', '—'); return; }
-    if (!r.present) {
-      setText('batteryValue', '无电池');
-      setText('batteryState', '台式机 / 虚拟机');
-      return;
-    }
-    const pct = r.pct;
-    const charging = r.charging;
-    const icon = charging ? '🔌' : '🔋';
-    setText('batteryValue', `${icon} ${pct}%`);
-    setText('batteryState', charging ? '充电中' : '使用中');
-    setText('batteryDetail', pct >= 80 ? '高' : pct >= 20 ? '中' : '低' + '电量');
-  } catch { setText('batteryValue', '—'); }
-}
 
 // ---- F6 网络 IP 卡片 ----
 async function renderNetCard() {
@@ -678,69 +705,50 @@ async function doSplit(which) {
   }
 }
 
-// ---- F9 剪贴板图片历史 ----
-async function renderClipImgCard() {
-  const brief = document.getElementById('clipImgBrief');
+// ---- F9 剪贴板图片历史（已并入「剪贴板」卡片，数据来自 clipState） ----
+function renderClipImgSection() {
+  const section = document.getElementById('clipImgSection');
+  const count = document.getElementById('clipImgCount');
   const list = document.getElementById('clipImgList');
-  if (!brief || !list) return;
-  const r = await v2.clipImageList();
-  const items = (r && r.ok && r.items) || [];
-  setText('clipImgBrief', items.length ? `${items.length} 张` : '暂无图片');
+  if (!list) return;
+  if (section) section.hidden = !(settings.clipboard || {}).imageHistory;
+  const items = (clipState.items || []).filter((i) => i.type === 'image');
+  if (count) count.textContent = items.length ? `${items.length} 张` : '';
   list.innerHTML = items.length
-    ? items.slice(0, 12).map((it) => `<img class="clip-img" src="${escHtml(it.dataUrl || it.preview || '')}" alt="clip">`).join('')
-    : '<div class="sub">复制图片后出现在这里（仅内存）</div>';
+    ? items.slice(0, 12).map((it) => `<img class="clip-img" src="${escHtml(it.thumb || '')}" alt="clip" data-id="${escHtml(it.id)}" title="点击取回">`).join('')
+    : '<div class="clip-empty">复制图片后出现在这里（仅内存）</div>';
 }
 
-// ---- F10 中转站 ----
+// ---- F10 中转站（v2.1：常用页只保留入口卡，列表统一住贴边浮窗面板）----
 async function renderStashCard() {
-  const list = document.getElementById('stashList');
-  if (!list) return;
-  const r = await v2.stashList();
-  const items = (r && r.ok && r.items) || [];
-  list.innerHTML = items.length
-    ? items.map((it) => `
-      <div class="sl-item">
-        <span class="sl-name">${escHtml(it.name || pathBase(it.path))}</span>
-        <span class="sl-id">${escHtml(it.path)}</span>
-        <button class="sl-del" data-sid="${escHtml(it.id)}" title="移除">✕</button>
-      </div>`).join('')
-    : '<div class="sub">暂无文件，粘贴路径加入</div>';
+  const countEl = document.getElementById('stashCount');
+  if (!countEl) return;
+  try {
+    const r = await v2.stashList();
+    const items = (r && r.ok && r.items) || [];
+    countEl.textContent = items.length ? `· ${items.length} 项` : '· 暂无文件';
+  } catch { countEl.textContent = ''; }
 }
-function pathBase(p) { try { return String(p).split('/').pop(); } catch { return p; } }
 async function addStash() {
   const input = document.getElementById('stashPath');
+  if (!input) return;
   const path = input.value.trim();
   if (!path) return;
   const r = await v2.stashAdd({ path });
   if (r && r.ok) { input.value = ''; renderStashCard(); }
   else say('中转站', (r && r.error) || '无法加入该路径');
 }
-async function clearStash() {
-  const ok = await showConfirm('清空中转站', '只移除所有路径引用，不删除任何文件。确定？');
-  if (!ok) return;
-  await v2.stashClear();
-  renderStashCard();
-}
 
 // ---- v2.0 事件绑定（卡片交互）----
 function wireV2Events() {
   const on = (id, evt, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(evt, fn); };
-  on('batteryCard', 'click', renderBatteryCard);
   on('netCopyLan', 'click', () => copyNet('lan'));
   on('netCopyWan', 'click', () => copyNet('wan'));
   on('netRefresh', 'click', renderNetCard);
   on('stashPath', 'keydown', (e) => { if (e.key === 'Enter') addStash(); });
-  on('stashClearBtn', 'click', clearStash);
+  on('stashOpenPanelBtn', 'click', () => { interact(); if (v2 && v2.stashPanelShow) v2.stashPanelShow(); });
   // 分屏按钮（事件委托）
   document.querySelectorAll('[data-split]').forEach((b) => b.addEventListener('click', () => doSplit(b.dataset.split)));
-  // 中转站删除（事件委托）
-  const sl = document.getElementById('stashList');
-  if (sl) sl.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-sid]');
-    if (!btn) return;
-    await v2.stashRemove(btn.dataset.sid);
-    renderStashCard();
-  });
   // ===== v2.0 批次C：状态页事件绑定（F2/F3/F5/F7/F12）=====
   on('btRefreshBtn', 'click', renderBtCard);
   on('sunburstScanBtn', 'click', () => { renderSunburstCard(); });
@@ -779,13 +787,16 @@ function wireV2Events() {
     else if (r && r.canceled) box.textContent = '';
     else box.textContent = '导入失败：' + ((r && r.error) || '请重试');
   });
+  // ===== v2.1 中转站浮窗：入口计数同步 + Tray「打开设置」=====
+  if (v2 && v2.onStashChanged) v2.onStashChanged(() => renderStashCard());
+  if (bridge && bridge.onOpenSettings) {
+    bridge.onOpenSettings(() => { if (!panelOpen) togglePanel(); switchTab('settings'); });
+  }
 }
 
 // 渲染全部 v2.0 常用页卡片（批次B）+ 状态页卡片（批次C）
 function renderV2Cards() {
-  renderBatteryCard();
   renderNetCard();
-  renderClipImgCard();
   renderStashCard();
   // 批次C：状态页（常显，按 settings 开关决定是否拉数据）
   renderPrivacyCard();
@@ -2611,6 +2622,11 @@ bindRange('rngOpacity', ['appearance', 'opacity'],
 bindRange('rngStealthOpacity', ['stealth', 'opacity'],
   (v) => { const n = document.getElementById('stealthOpacityVal'); if (n) n.textContent = `${v}%`; },
   null, pctToUnit(0.05, 0.9));
+// F1 电量提醒：阈值滑块（百分比整数直接落盘，主进程 sanitize 保证 low < full）
+bindRange('rngBatteryLow', ['battery', 'low'],
+  (v) => { const n = document.getElementById('batteryLowVal'); if (n) n.textContent = `${v}%`; });
+bindRange('rngBatteryFull', ['battery', 'full'],
+  (v) => { const n = document.getElementById('batteryFullVal'); if (n) n.textContent = `${v}%`; });
 
 // ===== v1.7：天气（F 组） =====
 bindSwitch('swWx', ['weather', 'enabled'], () => refreshWeatherCard(true));
@@ -2628,6 +2644,36 @@ bindSwitch('swStash', ['stash', 'enabled'], applyFeatureVisibility);
 bindSwitch('swBt', ['bluetooth', 'enabled']);
 bindSwitch('swSunburst', ['sunburst', 'enabled']);
 bindSwitch('swPrivacy', ['privacy', 'monitor']);
+// v2.1 中转站浮窗开关（常驻胶囊 / 边缘热区 / 菜单栏图标）
+bindSwitch('swStashPanel', ['stash', 'panelEnabled']);
+bindSwitch('swStashEdge', ['stash', 'edgeHot']);
+bindSwitch('swStashDragAuto', ['stash', 'dragAutoShow']);
+// v2.3 触发方向（上/下/左/右）：写设置后主进程 settings 变更处理器会自动 resyncStashPanel 重新吸附
+const selStashEdge = document.getElementById('selStashEdge');
+if (selStashEdge) {
+  selStashEdge.addEventListener('change', () => {
+    interact();
+    patchSettings({ stash: { edgeSide: selStashEdge.value || 'right' } });
+  });
+}
+bindSwitch('swStashTray', ['stash', 'trayEnabled']);
+// 胶囊不透明度：百分数滑块 → 单位区间小数（存储口径唯一）
+bindRange('rngStashOpacity', ['stash', 'capsuleOpacity'],
+  (v) => { const n = document.getElementById('stashOpacityVal'); if (n) n.textContent = `${v}%`; },
+  null, pctToUnit(0.3, 1));
+// v2.5 中转站存放目录：选择文件夹（主进程弹目录选择器并落盘）/ 打开目录
+const stashDirPickBtn = document.getElementById('stashDirPick');
+if (stashDirPickBtn) stashDirPickBtn.addEventListener('click', async () => {
+  interact();
+  const r = await v2.stashPickDir();
+  if (r && r.ok) {
+    const t = document.getElementById('stashDirText');
+    if (t) t.textContent = r.dir;
+    await loadSettings();
+  }
+});
+const stashDirOpenBtn = document.getElementById('stashDirOpen');
+if (stashDirOpenBtn) stashDirOpenBtn.addEventListener('click', () => { interact(); v2.stashOpenDir(); });
 // 设置页快捷启动管理：添加 / 恢复默认 / 删除
 const launchAddBtn = document.getElementById('launchAddBtn');
 if (launchAddBtn) launchAddBtn.addEventListener('click', () => {
@@ -2806,21 +2852,30 @@ function renderClipCard() {
   const count = document.getElementById('clipCount');
   const pauseBtn = document.getElementById('clipPauseBtn');
   const limit = clipState.limit || 10;
-  if (brief) brief.textContent = clipState.enabled ? `最近 ${clipState.items.length} / ${limit} 条` : '采集已关闭';
+  const textItems = (clipState.items || []).filter((i) => i.type !== 'image');
+  const imgItems = (clipState.items || []).filter((i) => i.type === 'image');
+  const imgOn = (settings.clipboard || {}).imageHistory;
+  if (brief) {
+    if (!clipState.enabled) brief.textContent = '采集已关闭';
+    else if (imgOn && imgItems.length) brief.textContent = `文本 ${textItems.length} · 图片 ${imgItems.length}`;
+    else brief.textContent = `最近 ${textItems.length} / ${limit} 条`;
+  }
   if (badge) badge.textContent = clipState.paused ? '⏸ 已暂停' : '';
   if (hint) hint.textContent = `最近 ${limit} 条`;
   if (count) count.textContent = clipState.items.length ? `${clipState.items.length} 条 · 钉 ${clipState.pinnedCount}/3` : '暂无记录';
   if (pauseBtn) pauseBtn.textContent = clipState.paused ? '继续' : '暂停';
   const list = document.getElementById('clipList');
   if (!list) return;
-  list.innerHTML = clipState.items.length
-    ? clipState.items.map((it) => `
+  list.innerHTML = textItems.length
+    ? textItems.map((it) => `
       <div class="clip-item" data-id="${escHtml(it.id)}">
         <span class="clip-text" title="${escHtml(it.preview)}">${escHtml(it.preview)}</span>
         <button class="clip-pin ${it.pinned ? 'on' : ''}" data-id="${escHtml(it.id)}" title="${it.pinned ? '取消钉住' : '钉住（最多 3 条）'}">📌</button>
         <button class="clip-del" data-id="${escHtml(it.id)}" title="删除">✕</button>
       </div>`).join('')
     : '<div class="clip-empty">还没有记录，复制点文本试试</div>';
+  // v2.0 F9：图片分区随剪贴板数据一并刷新
+  renderClipImgSection();
 }
 
 const clipListEl = document.getElementById('clipList');
@@ -2851,6 +2906,22 @@ if (clipListEl) {
       setTimeout(() => row.classList.remove('copied'), 700);
       await refreshClip();
     }
+  });
+}
+
+// v2.0 F9：图片缩略图点击取回（主进程对 image 类型已正确处理写回剪贴板）
+const clipImgListEl = document.getElementById('clipImgList');
+if (clipImgListEl) {
+  clipImgListEl.addEventListener('click', async (e) => {
+    const img = e.target.closest('.clip-img');
+    if (!img) return;
+    interact();
+    const r = await api.clipCopy(img.dataset.id);
+    if (!r || !r.ok) { say((r && r.error) || '取回失败'); return; }
+    img.classList.add('copied');
+    say('已复制到剪贴板', 1600);
+    setTimeout(() => img.classList.remove('copied'), 700);
+    await refreshClip();
   });
 }
 
@@ -3127,6 +3198,77 @@ if (keyResetEl) keyResetEl.addEventListener('click', async (e) => {
     setKeyHint(`已恢复为 ${accelLabel(r.trigger)}`, 'var(--mi-accent)');
   } else {
     setKeyHint((r && r.error) || '恢复失败');
+  }
+});
+
+// ============ v2.1 中转站浮窗：独立快捷键录制（仿主窗口召唤键，原子回滚）============
+let stashRecording = false;
+const stashKeyRecEl = document.getElementById('stashKeyRec');
+const stashKeyRecBtnEl = document.getElementById('stashKeyRecBtn');
+const stashKeyHintEl = document.getElementById('stashKeyHint');
+
+function stashSetHint(text, color) {
+  if (!stashKeyHintEl) return;
+  stashKeyHintEl.textContent = text;
+  stashKeyHintEl.style.color = color || '';
+}
+function stashRenderKeyRec() {
+  if (stashKeyRecEl && !stashRecording) {
+    stashKeyRecEl.textContent = accelLabel((settings.stash || {}).hotkey || 'Alt+Shift+Space');
+  }
+}
+function stashStartRecord() {
+  if (stashRecording) { stashStopRecord(); return; }
+  stashRecording = true;
+  if (stashKeyRecEl) { stashKeyRecEl.classList.add('recording'); stashKeyRecEl.textContent = '按下新快捷键…'; }
+  if (stashKeyRecBtnEl) stashKeyRecBtnEl.textContent = '取消';
+  stashSetHint('请按下新的组合键（Esc 取消）');
+}
+function stashStopRecord() {
+  stashRecording = false;
+  if (stashKeyRecEl) stashKeyRecEl.classList.remove('recording');
+  if (stashKeyRecBtnEl) stashKeyRecBtnEl.textContent = '录制';
+  stashRenderKeyRec();
+}
+
+document.addEventListener('keydown', async (e) => {
+  if (!stashRecording) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.code === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    stashStopRecord();
+    stashSetHint('已取消录制');
+    return;
+  }
+  if (isModifierOnly(e.code)) { stashSetHint('请再按一个字母 / 数字 / 功能键'); return; }
+  const acc = accelFromEvent(e);
+  if (!acc) { stashSetHint('这个键 Mio 认不出来，换个组合'); return; }
+  if (acc === 'Alt+H') { stashSetHint('与手动隐藏键冲突'); return; }
+  if (acc === 'Alt+Space') { stashSetHint('与主窗口召唤键冲突'); return; }
+  const r = await api.stashHotkeyRecord(acc);
+  stashStopRecord();
+  if (r && r.ok) {
+    settings.stash.hotkey = r.hotkey || acc;
+    renderSettings();
+    stashSetHint(`已设为 ${accelLabel(settings.stash.hotkey)}，立即生效`, 'var(--mi-accent)');
+  } else {
+    stashSetHint((r && r.error) || '这个组合注册失败，已还原');
+  }
+});
+if (stashKeyRecBtnEl) stashKeyRecBtnEl.addEventListener('click', (e) => { e.stopPropagation(); interact(); stashStartRecord(); });
+if (stashKeyRecEl) stashKeyRecEl.addEventListener('click', (e) => { e.stopPropagation(); interact(); stashStartRecord(); });
+const stashKeyResetEl = document.getElementById('stashKeyReset');
+if (stashKeyResetEl) stashKeyResetEl.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  interact();
+  const r = await api.stashHotkeyReset();
+  if (r && r.ok) {
+    settings.stash.hotkey = r.hotkey || 'Alt+Shift+Space';
+    stashStopRecord();
+    renderSettings();
+    stashSetHint(`已恢复为 ${accelLabel(settings.stash.hotkey)}`, 'var(--mi-accent)');
+  } else {
+    stashSetHint((r && r.error) || '恢复失败');
   }
 });
 

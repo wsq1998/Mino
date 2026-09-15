@@ -2,10 +2,10 @@
 // B4-4 拆分：从 main.js 抽出。零行为变化 —— 只搬定义，不动逻辑。
 // 依赖：无（不 require electron/app/win），保证纯函数可单测。
 
-const SETTINGS_VERSION = 8;
+const SETTINGS_VERSION = 9;
 
 const DEFAULT_SETTINGS = {
-  _v: 8,
+  _v: 9,
   general: { autoOpen: false, lang: 'auto' }, // v2.0 ENG-2：zh | en | auto（默认跟随系统）
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
@@ -87,7 +87,25 @@ const DEFAULT_SETTINGS = {
   // F8 窗口分屏：enabled 开关 + hotkey 快捷键（null = 未录制）
   split: { enabled: true, hotkey: null },
   // F10 文件暂存区 / 中转站：只记路径引用，不移动/复制/删除源文件
-  stash: { enabled: true, persist: true, items: [] },
+  // v2.1：新增浮窗（贴边胶囊 ⇄ 抽屉）相关配置（见 15-增量设计-中转站浮窗.md §8）
+  stash: {
+    // ===== 既有（不动）=====
+    enabled: true,
+    persist: true,
+    items: [],
+    // ===== v2.1 浮窗新增 =====
+    panelEnabled: true,         // 贴边胶囊是否常驻显示（false → 仅热键/Tray 呼出）
+    edgeHot: true,              // 鼠标撞屏边自动展开
+    dragAutoShow: true,         // v2.2 华为式触发：拖文件进入 Mio 浮窗时自动弹出（与 edgeHot 互补）
+    edgeSide: 'top',            // v2.3 触发边：'top' | 'bottom' | 'left' | 'right'（默认顶部，拖到屏幕上方触发）
+    edgeThreshold: 6,           // px，撞边灵敏度（1–24）
+    autoHideDelay: 1200,        // ms，离开后自动收起延迟（300–6000）
+    pinned: false,              // 抽屉是否钉住（钉住则永不自动收起）
+    hotkey: 'Alt+Shift+Space',  // 独立全局键；null = 未注册
+    trayEnabled: true,          // 菜单栏图标
+    capsuleOpacity: 0.6,        // 胶囊半透明度（0.3–1）
+    dir: '',                    // v2.5 中转站存储目录（空 = 默认：下载/Mio中转站）
+  },
   // F12 磁盘空间太阳图：默认开启
   sunburst: { enabled: true },
 };
@@ -197,13 +215,28 @@ function sanitizeSettings(s) {
   s.clipboard.imageHistory = !!s.clipboard.imageHistory;
   const ip = Number(s.clipboard.imagePersist);
   s.clipboard.imagePersist = Number.isFinite(ip) ? clamp(Math.round(ip), 0, 200) : 0;
-  // F10 stash：enabled/persist 布尔 + items 数组（每条 { id, path, name, size, addedAt }）
+  // F10 stash：enabled/persist 布尔 + items 数组（v2.5：每条 { id, path(中转站副本), srcPath(源), name, size, isDir, addedAt }）
   if (!s.stash || typeof s.stash !== 'object') s.stash = {};
   s.stash.enabled = !!s.stash.enabled;
   s.stash.persist = !!s.stash.persist;
   s.stash.items = Array.isArray(s.stash.items)
     ? s.stash.items.filter((it) => it && typeof it === 'object' && typeof it.path === 'string' && it.path.trim() !== '').slice(0, 100)
     : [];
+  // ===== v2.1 中转站浮窗收口（布尔 / 枚举 / 数值 / 不透明度 / 快捷键）=====
+  s.stash.panelEnabled = !!s.stash.panelEnabled;
+  s.stash.edgeHot = !!s.stash.edgeHot;
+  s.stash.dragAutoShow = !!s.stash.dragAutoShow;
+  s.stash.pinned = !!s.stash.pinned;
+  s.stash.trayEnabled = !!s.stash.trayEnabled;
+  s.stash.edgeSide = ['top', 'bottom', 'left', 'right'].includes(s.stash.edgeSide) ? s.stash.edgeSide : 'right';
+  s.stash.edgeThreshold = clamp(Math.round(Number(s.stash.edgeThreshold) || 6), 1, 24);
+  s.stash.autoHideDelay = clamp(Math.round(Number(s.stash.autoHideDelay) || 1200), 300, 6000);
+  // 不透明度走唯一口径 normUnit（与 appearance/stealth 一致）
+  s.stash.capsuleOpacity = normUnit(s.stash.capsuleOpacity, 0.3, 1, 0.6);
+  // 快捷键：字符串或 null（沿用 F8 split.hotkey 的收口写法）
+  s.stash.hotkey = (typeof s.stash.hotkey === 'string' && s.stash.hotkey.trim()) ? s.stash.hotkey.trim() : null;
+  // v2.5 中转站存储目录：绝对路径字符串，空串 = 用默认（下载/Mio中转站）
+  s.stash.dir = (typeof s.stash.dir === 'string' && s.stash.dir.trim()) ? s.stash.dir.trim() : '';
   // F12 sunburst：enabled 布尔
   if (!s.sunburst || typeof s.sunburst !== 'object') s.sunburst = {};
   s.sunburst.enabled = !!s.sunburst.enabled;

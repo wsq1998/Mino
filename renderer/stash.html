@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Mio · 中转站</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="stash.css">
+</head>
+<body>
+  <!-- 中转站浮窗根节点：胶囊态与抽屉态共用同一个窗口，靠 class 切换形态
+       .st--capsule 贴边细条常驻；.st--open 抽屉展开；.st--dropping 拖拽高亮；.st--pinned 钉住 -->
+  <div id="stRoot" class="st st--capsule" data-mode="capsule">
+    <!-- 胶囊态：贴边细条（拖文件到这里吸入 / 点击展开） -->
+    <div id="stCapsule" class="st-capsule" role="button" tabindex="0" title="拖文件到这里吸入 · 点击展开">
+      <span class="st-cap-grip" aria-hidden="true"></span>
+      <span class="st-cap-count" id="stCapCount">0</span>
+    </div>
+
+    <!-- 抽屉态 -->
+    <section id="stPanel" class="st-panel" aria-label="中转站">
+      <header class="st-head">
+        <span class="st-dot" aria-hidden="true"></span>
+        <span class="st-title">中转站</span>
+        <span class="st-count" id="stCount">0 项</span>
+        <span class="st-spacer"></span>
+        <button class="st-ic" id="stPinBtn" type="button" title="钉住（展开后不自动收起）" aria-label="钉住">📌</button>
+        <button class="st-ic" id="stAddBtn" type="button" title="选择文件加入" aria-label="选择文件">＋</button>
+        <!-- v2.9 展开/收起列表：仅当条目超过 2 行时可见（stash.js 控制 hidden） -->
+        <button class="st-ic" id="stExpandBtn" type="button" title="展开更多" aria-label="展开更多" hidden>▾</button>
+        <button class="st-ic" id="stCollapseBtn" type="button" title="收起为胶囊" aria-label="收起">⟩</button>
+      </header>
+
+      <div class="st-list" id="stList" role="list"></div>
+      <div class="st-empty" id="stEmpty">
+        把文件拖到屏幕边缘的胶囊即可吸入<br>
+        拖住下面任意条目，可拖出到访达 / 桌面 / 其他 App
+      </div>
+
+      <footer class="st-foot" id="stFoot">拖入 = 复制进中转站目录（源文件保留）· 拖出 = 从目录取出</footer>
+
+      <!-- 拖拽悬停时的高亮提示层（.st--dropping 时显示） -->
+      <div class="st-drop" id="stDropHint" aria-hidden="true">
+        <span class="st-drop-icon">↓</span>
+        <span class="st-drop-text">松手吸入中转站</span>
+      </div>
+    </section>
+
+    <!-- 轻量提示（复制成功 / 加入失败等） -->
+    <div class="st-toast" id="stToast" hidden></div>
+
+    <!-- v2.4 右键菜单（毛玻璃浮层，AirDrop / 显示 / 打开 / 复制路径 / 移除） -->
+    <div class="st-ctx" id="stCtx" hidden></div>
+  </div>
+
+  <script src="stash.js"></script>
+</body>
+</html>

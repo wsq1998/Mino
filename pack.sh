@@ -30,6 +30,8 @@ mkdir -p "$APP/Contents/Resources/app/renderer"
 cp main.js preload.js package.json "$APP/Contents/Resources/app/"
 cp -R main "$APP/Contents/Resources/app/main"
 cp renderer/index.html renderer/style.css renderer/app.js "$APP/Contents/Resources/app/renderer/"
+# v2.1 中转站浮窗资源：漏改会导致打包后浮窗白屏
+cp renderer/stash.html renderer/stash.js renderer/stash.css renderer/theme.css "$APP/Contents/Resources/app/renderer/"
 
 # 4. 元信息
 # ⚠️ 版本号必须显式写入：否则 plist 会残留 Electron.app 自带的版本号（如 33.4.11）
@@ -43,10 +45,23 @@ pb "CFBundleShortVersionString" "$VERSION"
 pb "CFBundleVersion" "$VERSION"
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null || true
 cp build/icon.icns "$APP/Contents/Resources/icon.icns"
+# v2.1：菜单栏模板图（Tray + 拖出兜底图标用）；缺失时运行时用内存模板图兜底，不影响功能
+mkdir -p "$APP/Contents/Resources/app/build"
+cp build/trayTemplate.png build/trayTemplate@2x.png "$APP/Contents/Resources/app/build/" 2>/dev/null || true
+# v2.7：编译原生 AirDrop helper（clang + Cocoa）并随包分发。
+# ⚠️ 为什么不用 osascript/applet：它们没有常驻 NSApplication run loop，分享面板会被立即销毁、弹不出来。
+clang -fobjc-arc -framework Cocoa -O2 -o build/airdrop-helper main/airdrop.m
+chmod +x build/airdrop-helper
+cp build/airdrop-helper "$APP/Contents/Resources/app/build/airdrop-helper"
+# 嵌套二进制必须先 ad-hoc 签名，否则外层 `codesign --verify --deep --strict` 会失败
+codesign --force --sign - build/airdrop-helper >/dev/null
+codesign --force --sign - "$APP/Contents/Resources/app/build/airdrop-helper" >/dev/null
 
 # 5. 重签（⚠️ 改动 bundle 后必须重签，否则 Gatekeeper 拒绝启动）
-codesign --force --sign - "$APP" >/dev/null
-codesign --verify "$APP" && echo "✅ 打包+签名完成: $APP (v$VERSION)"
+# ⚠️ 外层必须用 --deep：Electron 自带的嵌套 Helper(.app) 是 linker-signed，不加 --deep 时
+#    `codesign --verify --deep --strict` 会报 "code has no resources but signature indicates they must be present"。
+codesign --force --deep --sign - "$APP" >/dev/null
+codesign --verify --deep --strict "$APP" && echo "✅ 打包+签名完成: $APP (v$VERSION)"
 
 # 6. 可选：安装并启动
 # ⚠️ 受限环境下写入 /Applications 会被拒绝，此时只提示不中断，保证 --dmg 仍能跑完

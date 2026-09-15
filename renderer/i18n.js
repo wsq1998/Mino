@@ -41,6 +41,8 @@ const LANG = {
     'battery.enabled': '启用',
     'battery.low': '低电量阈值',
     'battery.full': '满电阈值',
+    'battery.chargedHint': '充满 100% 时也会提醒拔电（三档提醒无需单独开关，全部默认启用）',
+    'battery.note': '低于低电量阈值且未充电 → 提醒充电；达到满电阈值且仍在充电 → 提醒拔电；充满 100% 且仍在充电 → 再次提醒拔电。免打扰时段内静默（沿用「健康提醒」的免打扰时段）。',
     // 蓝牙
     'bt.title': '蓝牙设备',
     'bt.empty': '暂无设备',
@@ -82,6 +84,7 @@ const LANG = {
     'settings.stash': '中转站',
     'settings.sunburst': '磁盘太阳图',
     'settings.backup': '备份',
+    'tools.note': '控制各功能卡片与后台提醒的总开关；电量提醒的开关与阈值见下方「电量提醒」组',
     // 通用
     'common.confirm': '确定',
     'common.cancel': '取消',
@@ -121,6 +124,8 @@ const LANG = {
     'battery.enabled': 'Enabled',
     'battery.low': 'Low threshold',
     'battery.full': 'Full threshold',
+    'battery.chargedHint': 'You will also be reminded to unplug at 100% (all three alerts are always on)',
+    'battery.note': 'Below the low threshold while unplugged → charge reminder; reaching the full threshold while charging → unplug reminder; reaching 100% while still charging → another unplug reminder. Silent during quiet hours (shared with Health reminders).',
     'bt.title': 'Bluetooth Devices',
     'bt.empty': 'No devices',
     'bt.battery': 'Battery',
@@ -156,6 +161,7 @@ const LANG = {
     'settings.stash': 'Stash',
     'settings.sunburst': 'Disk Sunburst',
     'settings.backup': 'Backup',
+    'tools.note': 'Master switches for cards and background alerts; the battery alert switch and thresholds are in the "Battery Alerts" group below',
     'common.confirm': 'OK',
     'common.cancel': 'Cancel',
     'common.close': 'Close',

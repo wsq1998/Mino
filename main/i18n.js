@@ -37,6 +37,9 @@ const LANG = {
     // 中转站
     'stash.added.title': 'Mio · 已加入中转站',
     'stash.added.body': '{name}',
+    'stash.hotkeyFail.title': 'Mio · 中转站快捷键未生效',
+    'stash.hotkeyFail.body': '{hotkey} 可能被别的程序占用了，呼出中转站快捷键尚未生效。可在「{path}」里换一个。',
+    'stash.hotkeyFail.path': '设置 → 中转站浮窗',
     // 通用错误
     'error.generic': '操作失败，请重试',
   },
@@ -65,6 +68,9 @@ const LANG = {
     'backup.imported.body': 'Settings merged & restored',
     'stash.added.title': 'Mio · Added to Stash',
     'stash.added.body': '{path}',
+    'stash.hotkeyFail.title': 'Mio · Stash shortcut unavailable',
+    'stash.hotkeyFail.body': '{hotkey} may be taken by another app, so the Stash shortcut is not active yet. Pick another one in "{path}".',
+    'stash.hotkeyFail.path': 'Settings → Stash Panel',
     'error.generic': 'Operation failed, please retry',
   },
 };

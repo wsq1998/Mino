@@ -11,16 +11,17 @@ const path = require('path');
 const settings = require('../main/core/settings.js');
 const bluetooth = require('../main/core/bluetooth.js');
 const safeTrash = require('../main/core/safeTrash.js');
+const battery = require('../main/core/battery.js');
 const { isUninstallTarget: targetsIsUninstallTarget } = require('../main/clean/targets.js');
 const mainI18n = require('../main/i18n.js');
 const rendererI18n = require('../renderer/i18n.js');
 
 const HOME = os.homedir();
 
-// ===== settings：v7 → v8 迁移 + 收口 =====
-test('settings.SETTINGS_VERSION 升到 8', () => {
-  assert.equal(settings.SETTINGS_VERSION, 8);
-  assert.equal(settings.DEFAULT_SETTINGS._v, 8);
+// ===== settings：v8 → v9 迁移 + 收口 =====
+test('settings.SETTINGS_VERSION 升到 9', () => {
+  assert.equal(settings.SETTINGS_VERSION, 9);
+  assert.equal(settings.DEFAULT_SETTINGS._v, 9);
 });
 
 test('settings 老配置读入自动长出 12 个新区（只增不改）', () => {
@@ -49,6 +50,34 @@ test('settings.battery 数值收口（low < full）', () => {
 test('settings.privacy.ignoreApps 数组白名单收口', () => {
   const s = settings.sanitizeSettings(settings.deepMerge(settings.DEFAULT_SETTINGS, { privacy: { ignoreApps: ['zoom', '', 42, 'wechat'] } }));
   assert.deepEqual(s.privacy.ignoreApps, ['zoom', 'wechat']);
+});
+
+// ===== v2.1 中转站浮窗：stash 新键收口 + 老配置自动补齐 =====
+test('settings.stash 新键：老配置读入自动补齐默认值', () => {
+  const old = { _v: 8, stash: { enabled: true, persist: true, items: [] } };
+  const s = settings.sanitizeSettings(settings.deepMerge(settings.DEFAULT_SETTINGS, old));
+  assert.equal(s.stash.panelEnabled, true);
+  assert.equal(s.stash.edgeHot, true);
+  assert.equal(s.stash.edgeSide, 'top'); // v2.3 默认触发边改为顶部
+  assert.equal(s.stash.edgeThreshold, 6);
+  assert.equal(s.stash.autoHideDelay, 1200);
+  assert.equal(s.stash.pinned, false);
+  assert.equal(s.stash.hotkey, 'Alt+Shift+Space');
+  assert.equal(s.stash.trayEnabled, true);
+  assert.equal(s.stash.capsuleOpacity, 0.6);
+  assert.equal(s.stash.dir, ''); // v2.5 默认存放目录（空 = 下载/Mio中转站）
+});
+
+test('settings.stash 新键：脏数据收口（枚举/数值/快捷串）', () => {
+  const s = settings.sanitizeSettings(settings.deepMerge(settings.DEFAULT_SETTINGS, {
+    stash: { edgeSide: 'up', edgeThreshold: 999, autoHideDelay: 5, capsuleOpacity: 100, hotkey: '   ', dir: '   ' },
+  }));
+  assert.equal(s.stash.edgeSide, 'right');          // 非法枚举 → right
+  assert.equal(s.stash.edgeThreshold, 24);          // 夹到 1–24
+  assert.equal(s.stash.autoHideDelay, 300);         // 夹到 300–6000
+  assert.equal(s.stash.capsuleOpacity, 1);          // normUnit(100) → 夹到 1
+  assert.equal(s.stash.hotkey, null);               // 空白串 → null（未注册）
+  assert.equal(s.stash.dir, '');                    // v2.5 空白串目录 → ''（用默认）
 });
 
 // ===== bluetooth =====
@@ -125,4 +154,52 @@ test('main/i18n 中英取词 + 缺失回退 zh', () => {
 
 test('renderer/i18n 中英取词 + 缺失回退', () => {
   assert.equal(rendererI18n.t('no.such.key', { lang: 'en' }), 'no.such.key');
+});
+
+// ===== battery：三档判定 + 去重状态机（v2.0 F1 优化）=====
+test('battery.currentLevel 三档判定', () => {
+  assert.equal(battery.currentLevel({ pct: 100, charging: true, low: 20, full: 80 }), 'charged');
+  assert.equal(battery.currentLevel({ pct: 80, charging: true, low: 20, full: 80 }), 'full');
+  assert.equal(battery.currentLevel({ pct: 79, charging: true, low: 20, full: 80 }), null);
+  assert.equal(battery.currentLevel({ pct: 20, charging: false, low: 20, full: 80 }), 'low');
+  assert.equal(battery.currentLevel({ pct: 21, charging: false, low: 20, full: 80 }), null);
+  // 低电量但插着电 → 充电档位优先，不提醒充电
+  assert.equal(battery.currentLevel({ pct: 10, charging: true, low: 20, full: 80 }), null);
+});
+
+test('battery.decideAlert 各档独立去重 + 离开档位重置', () => {
+  const base = { low: 20, full: 80 };
+  let r = battery.decideAlert({ ...base, pct: 15, charging: false, lastLevel: null });
+  assert.deepEqual(r, { level: 'low', notify: true, nextLevel: 'low' });
+  r = battery.decideAlert({ ...base, pct: 10, charging: false, lastLevel: 'low' });
+  assert.equal(r.notify, false);
+  r = battery.decideAlert({ ...base, pct: 50, charging: false, lastLevel: 'low' });
+  assert.deepEqual(r, { level: null, notify: false, nextLevel: null });
+  r = battery.decideAlert({ ...base, pct: 19, charging: false, lastLevel: null });
+  assert.equal(r.notify, true);
+});
+
+test('battery.decideAlert 充电到阈值与充满 100% 是两次独立提醒', () => {
+  const base = { low: 20, full: 80 };
+  let r = battery.decideAlert({ ...base, pct: 80, charging: true, lastLevel: null });
+  assert.deepEqual(r, { level: 'full', notify: true, nextLevel: 'full' });
+  r = battery.decideAlert({ ...base, pct: 95, charging: true, lastLevel: 'full' });
+  assert.equal(r.notify, false);
+  r = battery.decideAlert({ ...base, pct: 100, charging: true, lastLevel: 'full' });
+  assert.deepEqual(r, { level: 'charged', notify: true, nextLevel: 'charged' });
+  r = battery.decideAlert({ ...base, pct: 100, charging: true, lastLevel: 'charged' });
+  assert.equal(r.notify, false);
+});
+
+test('battery.decideAlert 非法输入收敛（pct 夹取 / 阈值回退默认 / lastLevel 清洗）', () => {
+  const r = battery.decideAlert({ pct: NaN, charging: false, low: undefined, full: undefined, lastLevel: 'weird' });
+  assert.deepEqual(r, { level: 'low', notify: true, nextLevel: 'low' });
+  const r2 = battery.decideAlert({ pct: 200, charging: false, low: 20, full: 80, lastLevel: null });
+  assert.deepEqual(r2, { level: null, notify: false, nextLevel: null });
+});
+
+test('renderer/i18n 电量提醒新增文案中英齐全', () => {
+  assert.equal(rendererI18n.t('battery.chargedHint', { lang: 'zh' }).slice(0, 2), '充满');
+  assert.notEqual(rendererI18n.t('battery.note', { lang: 'en' }), 'battery.note');
+  assert.notEqual(rendererI18n.t('tools.note', { lang: 'zh' }), 'tools.note');
 });

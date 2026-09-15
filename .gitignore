@@ -3,6 +3,7 @@ node_modules/
 dist/
 .electron-cache/
 build/icon.iconset/
+build/airdrop-helper
 
 # 本地截图（桌面粉图含隐私，不入库）
 docs/shots/desktop-live.png
@@ -13,3 +14,6 @@ docs/shots/desktop-live.png
 
 # 内部工作记忆（不随代码入库）
 .workbuddy/
+
+# 测试脚手架残留
+skills/

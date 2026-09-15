@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Mio</title>
+<link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -88,7 +89,7 @@
           <div id="pomoBars" style="margin-top:8px"></div>
         </div>
       </div>
-      <!-- v1.6 B2-1：剪贴板历史（点击钻入详情） -->
+      <!-- v1.6 B2-1：剪贴板历史（文本 + 图片，点击钻入详情） -->
       <div class="card expandable interactive-btn" id="clipCard" data-dv-title="剪贴板历史">
         <div class="label">剪贴板 <span id="clipBadge" class="sub-inline"></span><span class="expand-hint" id="clipHint">最近 10 条</span></div>
         <div id="clipBrief" class="value small">—</div>
@@ -97,6 +98,11 @@
             <span id="clipCount" class="sub-inline">0 条</span>
             <button class="btn tiny" id="clipPauseBtn">暂停</button>
             <button class="btn tiny danger" id="clipClearBtn">全部清除</button>
+          </div>
+          <!-- v2.0 F9 图片历史分区：随设置「剪贴板图片历史」开关显隐 -->
+          <div id="clipImgSection" class="clip-img-section" hidden>
+            <div class="clip-img-title">图片 <span id="clipImgCount" class="sub-inline"></span></div>
+            <div id="clipImgList" class="clip-img-list"></div>
           </div>
           <div id="clipList" class="clip-list"></div>
           <div class="set-note">只在本机内存保存，退出即清空，绝不写入磁盘</div>
@@ -112,13 +118,7 @@
         </div>
         <div id="qaNotice" class="qa-notice" hidden></div>
       </div>
-      <!-- ===== v2.0 批次B：常用页核心功能（F1/F4/F6/F8/F9/F10/F11）===== -->
-      <!-- F1：电量提醒卡片 -->
-      <div class="card" id="batteryCard" hidden>
-        <div class="label">电量 <span id="batteryDetail" class="sub-inline"></span></div>
-        <div id="batteryValue" class="value">—</div>
-        <div id="batteryState" class="sub">点击刷新</div>
-      </div>
+      <!-- ===== v2.0 批次B：常用页核心功能（F4/F6/F8/F9/F10/F11）===== -->
       <!-- F6 网络 IP 卡片 -->
       <div class="card" id="netCard" hidden>
         <div class="label">网络 IP</div>
@@ -141,23 +141,14 @@
         </div>
         <div id="splitNotice" class="set-note" hidden></div>
       </div>
-      <!-- F9 剪贴板图片历史卡片 -->
-      <div class="card expandable interactive-btn" id="clipImgCard" hidden data-dv-title="剪贴板图片历史">
-        <div class="label">图片历史 <span class="expand-hint">点击展开</span></div>
-        <div id="clipImgBrief" class="value small">—</div>
-        <div class="detail">
-          <div id="clipImgList" class="clip-img-list"></div>
-          <div class="set-note" id="clipImgNote">仅内存保存，退出即清空</div>
-        </div>
-      </div>
-      <!-- F10 文件暂存区 / 中转站 -->
+      <!-- F10 文件暂存区 / 中转站（v2.1：简化为入口卡，列表统一住贴边浮窗面板） -->
       <div class="card" id="stashCard" hidden>
-        <div class="label">中转站 <button class="btn tiny danger" id="stashClearBtn" style="float:right">清空</button></div>
-        <div id="stashList" class="stash-list"></div>
+        <div class="label">中转站 <span class="sub-inline" id="stashCount"></span></div>
+        <button class="btn wide" id="stashOpenPanelBtn">打开面板</button>
         <div class="stash-add">
           <input id="stashPath" type="text" class="stext" placeholder="粘贴文件路径，回车加入" maxlength="500">
         </div>
-        <div class="set-note">只记录路径引用，绝不移动 / 复制 / 删除源文件</div>
+        <div class="set-note">列表在屏幕贴边的「中转站」浮窗里；拖入 = 复制进中转站目录（源文件保留不动），拖出 = 从目录取出，源文件绝不移动 / 删除</div>
       </div>
       <button class="btn wide" id="homeToSettings">打开设置</button>
       <!-- v1.8 G 组：AI 对话入口（在设置里启用后才显示） -->
@@ -604,7 +595,6 @@
           <div class="set-note">控制「常用」页的快捷启动卡片显示</div>
           <div class="set-row"><span>番茄钟统计</span><label class="switch"><input type="checkbox" id="swPomo"><i></i></label></div>
           <div class="set-note">控制「常用」页的番茄钟统计卡片显示</div>
-          <div class="set-row"><span>电量提醒</span><label class="switch"><input type="checkbox" id="swBattery"><i></i></label></div>
           <div class="set-row"><span>网络 IP</span><label class="switch"><input type="checkbox" id="swNet"><i></i></label></div>
           <div class="set-row"><span>窗口分屏</span><label class="switch"><input type="checkbox" id="swSplit"><i></i></label></div>
           <div class="set-row"><span>剪贴板图片历史</span><label class="switch"><input type="checkbox" id="swClipImg"><i></i></label></div>
@@ -612,7 +602,7 @@
           <div class="set-row"><span>蓝牙设备电量</span><label class="switch"><input type="checkbox" id="swBt"><i></i></label></div>
           <div class="set-row"><span>磁盘太阳图</span><label class="switch"><input type="checkbox" id="swSunburst"><i></i></label></div>
           <div class="set-row"><span>隐私占用监控</span><label class="switch"><input type="checkbox" id="swPrivacy"><i></i></label></div>
-          <div class="set-note">控制「常用」页与「状态」页对应卡片的显示</div>
+          <div class="set-note" id="toolsNote">控制各功能卡片与后台提醒的总开关；电量提醒的开关与阈值见下方「电量提醒」组</div>
           <div class="set-row"><span>添加快捷启动项</span><span class="set-val">App 名</span></div>
           <div class="set-row"><input type="text" id="launchAppInput" class="stext" placeholder="如：Spotify / 备忘录" maxlength="60"></div>
           <div class="stealth-actions">
@@ -624,39 +614,64 @@
         </div>
       </details>
 
+      <!-- v2.1 中转站浮窗（贴边胶囊 ⇄ 抽屉 + 菜单栏图标） -->
+      <details class="sgroup" data-group="stashpanel">
+        <summary class="sgroup-h"><span class="sg-name">中转站浮窗</span><span class="sg-brief" id="sgBrief-stashpanel"></span></summary>
+        <div class="sgroup-b">
+          <div class="set-row"><span>常驻胶囊（贴边停靠）</span><label class="switch"><input type="checkbox" id="swStashPanel"><i></i></label></div>
+          <div class="set-note">关闭后浮窗不常驻，仅靠下面两个入口呼出</div>
+          <div class="set-row"><span>存放目录</span><span class="set-val" id="stashDirText">默认</span></div>
+          <div class="keyrec-actions">
+            <button class="btn tiny" id="stashDirPick">选择文件夹</button>
+            <button class="btn tiny" id="stashDirOpen">打开目录</button>
+          </div>
+          <div class="set-note">中转站是独立存储目录（可自定义）：拖入 = 复制一份进去，源文件保留不动；拖出 = 从该目录取出。留空则用默认位置「下载/Mio中转站」。</div>
+          <div class="set-row"><span>触发显示方向</span>
+            <select id="selStashEdge" class="sselect">
+              <option value="top">上</option>
+              <option value="bottom">下</option>
+              <option value="left">左</option>
+              <option value="right">右</option>
+            </select>
+          </div>
+          <div class="set-note">拖文件到该屏缘即自动弹出中转站：上/下为横向货架，左/右为侧边抽屉</div>
+          <div class="set-row"><span>鼠标撞屏边自动展开</span><label class="switch"><input type="checkbox" id="swStashEdge"><i></i></label></div>
+          <div class="set-row"><span>拖文件到浮窗自动弹出</span><label class="switch"><input type="checkbox" id="swStashDragAuto"><i></i></label></div>
+          <div class="set-note">华为式中转站：把文件拖到 Mio 浮窗时自动展开接住；关闭后仅手动打开的抽屉可接住拖入（仅保留「撞屏边」触发时也不会自动弹）</div>
+          <div class="set-row"><span>菜单栏图标</span><label class="switch"><input type="checkbox" id="swStashTray"><i></i></label></div>
+          <div class="set-note">隐藏 Dock 图标后，菜单栏图标是「显示 / 隐藏中转站、清空、退出 Mio」的常驻入口</div>
+          <div class="set-row"><span>呼出快捷键</span><button class="keyrec" id="stashKeyRec">⌥⇧Space</button></div>
+          <div class="keyrec-actions">
+            <button class="btn tiny" id="stashKeyRecBtn">录制</button>
+            <button class="btn tiny" id="stashKeyReset">恢复默认</button>
+          </div>
+          <div class="set-note" id="stashKeyHint">点「录制」后按下新组合（至少含 ⌘ / ⌃ / ⌥ 之一）；不能占用 ⌥Space / ⌥H</div>
+          <div class="set-row"><span>胶囊不透明度</span><span class="set-val" id="stashOpacityVal">60%</span></div>
+          <input type="range" id="rngStashOpacity" class="srange" min="30" max="100" step="5" value="60">
+        </div>
+      </details>
+
       <!-- ===== v2.0 批次B/C/D：新功能设置分组（F1–F13）===== -->
       <!-- F1 电量提醒 -->
       <details class="sgroup" data-group="battery">
         <summary class="sgroup-h"><span class="sg-name">电量提醒</span><span class="sg-brief" id="sgBrief-battery"></span></summary>
         <div class="sgroup-b">
+          <div class="set-row"><span>电量提醒</span><label class="switch"><input type="checkbox" id="swBattery"><i></i></label></div>
           <div class="set-row"><span>低电量阈值</span><span class="set-val" id="batteryLowVal">20%</span></div>
           <input type="range" id="rngBatteryLow" class="srange" min="5" max="95" step="5" value="20">
           <div class="set-row"><span>满电阈值</span><span class="set-val" id="batteryFullVal">80%</span></div>
           <input type="range" id="rngBatteryFull" class="srange" min="20" max="100" step="5" value="80">
-          <div class="set-note">低于低电量阈值且未充电时提醒充电；达到满电阈值且仍在充电时提醒拔电。免打扰时段内静默。</div>
+          <div class="set-note" id="batteryChargedHint">充满 100% 时也会提醒拔电（三档提醒无需单独开关，全部默认启用）</div>
+          <div class="set-note" id="batteryNote">低于低电量阈值且未充电 → 提醒充电；达到满电阈值且仍在充电 → 提醒拔电；充满 100% 且仍在充电 → 再次提醒拔电。免打扰时段内静默（沿用「健康提醒」的免打扰时段）。</div>
         </div>
       </details>
       <!-- F2 隐私占用 -->
       <details class="sgroup" data-group="privacy">
         <summary class="sgroup-h"><span class="sg-name">隐私占用监控</span><span class="sg-brief" id="sgBrief-privacy"></span></summary>
         <div class="sgroup-b">
-          <div class="set-note">检测到摄像头 / 麦克风被占用时在「状态」页提示，可一键忽略该应用</div>
+          <div class="set-note">检测到摄像头 / 麦克风被占用时在「状态」页提示，可一键忽略该应用。总开关在「功能开关」组。</div>
           <div id="privacyIgnoreList" class="stealth-list"></div>
           <div class="stealth-actions"><button class="btn tiny" id="privacyReset">恢复默认忽略名单</button></div>
-        </div>
-      </details>
-      <!-- F3 蓝牙电量 -->
-      <details class="sgroup" data-group="bluetooth">
-        <summary class="sgroup-h"><span class="sg-name">蓝牙设备电量</span><span class="sg-brief" id="sgBrief-bluetooth"></span></summary>
-        <div class="sgroup-b">
-          <div class="set-note">AirPods / 耳机等蓝牙设备电量显示在「状态」页；60 秒缓存</div>
-        </div>
-      </details>
-      <!-- F6 网络 IP -->
-      <details class="sgroup" data-group="network">
-        <summary class="sgroup-h"><span class="sg-name">网络 IP</span><span class="sg-brief" id="sgBrief-network"></span></summary>
-        <div class="sgroup-b">
-          <div class="set-note">「常用」页显示内网 / 公网 IP，可一键复制。公网经免 key 地理服务获取，缓存 24 小时。</div>
         </div>
       </details>
       <!-- F7 应用卸载 -->
@@ -665,34 +680,6 @@
         <div class="sgroup-b">
           <div class="set-row"><span>卸载前二次确认</span><span class="set-val">强制开启</span></div>
           <div class="set-note">卸载应用只把 App 及其残留移入废纸篓，绝不永久删除；二次确认不可关闭。</div>
-        </div>
-      </details>
-      <!-- F8 窗口分屏 -->
-      <details class="sgroup" data-group="split">
-        <summary class="sgroup-h"><span class="sg-name">窗口分屏</span><span class="sg-brief" id="sgBrief-split"></span></summary>
-        <div class="sgroup-b">
-          <div class="set-note">「常用」页四向分屏按钮；需要辅助功能权限，未授权时自动降级引导。</div>
-        </div>
-      </details>
-      <!-- F9 剪贴板图片历史 -->
-      <details class="sgroup" data-group="clipimg">
-        <summary class="sgroup-h"><span class="sg-name">剪贴板图片历史</span><span class="sg-brief" id="sgBrief-clipimg"></span></summary>
-        <div class="sgroup-b">
-          <div class="set-note">「常用」页显示剪贴板中的图片历史；仅内存保存，退出即清空。</div>
-        </div>
-      </details>
-      <!-- F10 中转站 -->
-      <details class="sgroup" data-group="stash">
-        <summary class="sgroup-h"><span class="sg-name">文件暂存区 / 中转站</span><span class="sg-brief" id="sgBrief-stash"></span></summary>
-        <div class="sgroup-b">
-          <div class="set-note">只记录路径引用，绝不移动 / 复制 / 删除源文件；最多 100 条。</div>
-        </div>
-      </details>
-      <!-- F12 磁盘太阳图 -->
-      <details class="sgroup" data-group="sunburst">
-        <summary class="sgroup-h"><span class="sg-name">磁盘空间太阳图</span><span class="sg-brief" id="sgBrief-sunburst"></span></summary>
-        <div class="sgroup-b">
-          <div class="set-note">「状态」页以太阳图可视化磁盘空间占用分布。</div>
         </div>
       </details>
       <!-- F13 设置备份 -->

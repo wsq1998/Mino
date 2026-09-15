@@ -1,0 +1,50 @@
+%% 中转站浮窗 · 交互时序（docs/15-增量设计-中转站浮窗.md §3）
+%% 一、拖文件 → 胶囊吸入 → 面板刷新
+sequenceDiagram
+  autonumber
+  actor U as 用户
+  participant F as 访达 / 其他 App
+  participant SW as stashWin 渲染层(stash.js)
+  participant PL as preload.js
+  participant M as main.js
+  participant ST as stash.js
+
+  U->>F: 选中文件，按住拖向屏幕右缘胶囊
+  F->>SW: dragover（OS 原生拖拽进入窗口）
+  SW->>SW: e.preventDefault() + 胶囊高亮/脉冲（.st--dropping）
+  U->>SW: 松手 drop
+  SW->>PL: getPathForFile(file)
+  PL->>SW: 返回绝对路径 /abs/path
+  SW->>M: invoke('v2-stash-add', { paths:[...] })
+  M->>ST: stash.add(path) 逐个（statSync 校验存在 / 去重 / MAX_ITEMS=100）
+  ST-->>M: { ok, item, items } / { ok:false, error }
+  M->>M: 成功则 logMessage('中转站', '已吸入 N 项')
+  M-->>SW: { ok, items, failed:[...] }
+  SW->>SW: renderStashList() 立即刷新
+  M->>SW: webContents.send('stash-changed', { items })
+  M->>PL: (win 同 preload) send('stash-changed')
+  Note over M,PL: 主窗口常用页入口计数同步刷新
+
+%% 二、从面板拖出文件到访达（原生拖拽）
+sequenceDiagram
+  autonumber
+  actor U as 用户
+  participant SW as stashWin 渲染层(stash.js)
+  participant M as main.js
+  participant ST as stash.js
+  participant NI as nativeImage / app
+  participant F as 访达 / 桌面 / 其他 App
+
+  U->>SW: 在面板里按住某项开始拖动
+  SW->>SW: dragstart：标记 dragging=true（通知主进程暂停自动收起）
+  SW->>M: send('v2-stash-drag-out', { ids:['stash_x'] })
+  M->>ST: stash.list() + 查表还原真实绝对路径
+  ST-->>M: [{ id, path, name }]
+  M->>NI: app.getFileIcon(path) → NativeImage（resize 至 32/48）
+  NI-->>M: 非空 NativeImage（macOS 要求 icon 非空）
+  M->>M: stashWin.webContents.startDrag({ files:[abs...], icon })
+  Note over M,F: startDrag 后拖拽会话由 Electron 接管，光标拖影显示文件
+  U->>F: 松手到目标位置（桌面 / 访达窗口 / 其他 App）
+  F->>F: 系统按原生规则复制/移动该文件
+  SW->>M: send('v2-stash-drag-end')
+  M->>M: dragging=false → 恢复自动收起计时

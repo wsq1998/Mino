@@ -1,5 +1,5 @@
 // Mio - macOS 桌面陪伴机器人 · 主进程
-const { app, BrowserWindow, ipcMain, Menu, Notification, globalShortcut, screen, shell, clipboard, systemPreferences, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, Tray, Notification, globalShortcut, screen, shell, clipboard, systemPreferences, nativeImage, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -17,9 +17,12 @@ const alarm = require('./main/core/alarm.js'); // v1.9 真正的闹钟/倒计时
 // ===== v2.0 批次B：常用页核心功能纯函数层 =====
 const ipnet = require('./main/core/ipnet.js');         // F6 网络 IP（内网/公网/复制）
 const stash = require('./main/core/stash.js');         // F10 文件暂存区（只存路径引用）
+const stashPanel = require('./main/core/stashPanel.js'); // v2.1 中转站浮窗几何/状态机（纯函数）
+const trayIcon = require('./main/core/trayIcon.js');   // v2.1 菜单栏模板图（纯函数，单色 + alpha）
 const bluetooth = require('./main/core/bluetooth.js'); // F3 蓝牙设备电量（60s 缓存）
 const uninstaller = require('./main/core/uninstall.js'); // F7 应用卸载器（safeTrash 封装）
 const sunburst = require('./main/core/sunburst.js');   // F12 磁盘空间太阳图（du 扫描 + 缓存）
+const battery = require('./main/core/battery.js');     // F1 电量提醒：三档判定 + 去重（纯函数）
 const { LANG: I18N_LANG, resolveLang, t: i18nT } = require('./main/i18n.js'); // 通知文案 i18n
 const { LLM_PRESETS, LLM_PRICING, KEYCHAIN_SERVICE } = require('./main/llm/presets.js');
 const { WX_CODES, RAIN_CODES, SNOW_CODES } = require('./main/weather/codes.js');
@@ -39,8 +42,32 @@ let cursorTimer = null;
 let samplerTimer = null;
 let alarmTimer = null; // v1.9 倒计时 tick
 // ===== v2.0 批次B：常用页轮询状态 =====
-let batteryTimer = null;        // F1 电量提醒轮询（60s）
-let batteryNotifiedLevel = null; // F1 已提醒过的电量档位（内存 + 落盘，跨重启防重复打扰）
+let batteryTimer = null;        // F1 电量提醒轮询（30s）
+let batteryNotifiedLevel = null; // F1 已提醒过的电量档位（仅内存；进程重启后从 null 开始，可再次提醒一次）
+
+// ===== v2.1 中转站浮窗（贴边胶囊 ⇄ 抽屉，单窗口形变）=====
+// 共享知识约定：stashWin / tray / isQuitting / stashPanelTimer 四个全局名不得改名（docs §11）。
+let stashWin = null;            // 浮窗（胶囊与抽屉是同一个 BrowserWindow 的两种形态）
+let tray = null;                // 菜单栏图标（必须持有引用，否则被 GC 后图标消失）
+let isQuitting = false;         // 退出标志：before-quit 置位；window-all-closed 靠它兜底
+let stashPanelTimer = null;     // 300ms 状态机心跳（边缘热区检测 + 自动收起兜底）
+let stashState = null;          // 当前 PanelState（stashPanel.resolvePanelState 的输出）
+let stashHovering = false;      // 光标是否停在展开的抽屉上（用于 HOVER_IN/HOVER_OUT 边沿判定）
+let stashHotkeyRegistered = true; // 中转站独立快捷键是否注册成功（供 UI 提示）
+let stashDragTimer = null;      // 拖出安全网计时器（防渲染层漏发 drag-end）
+// v2.10 货架展开运行时状态：随用户点 ▾/▴ 变化，不落盘（区别于持久设置）。
+// 每次 resolvePanelState 前注入 settings.stash.shelfExpanded，stashPanel 纯函数据此算货架高度。
+let stashShelfExpanded = false;
+
+// ===== v2.6 中转站端到端排查日志 =====
+// 唯一诊断信道：同步追加 userData/mio-stash-debug.log（渲染层事件 + 主进程拖出/AirDrop 全链路）。
+// 诊断用途，任何异常都不得影响主流程 —— 因此整函数体包 try/catch 静默。
+function stashTrace(msg) {
+  try {
+    const p = path.join(app.getPath('userData'), 'mio-stash-debug.log');
+    fs.appendFileSync(p, new Date().toISOString() + ' ' + msg + '\n');
+  } catch {}
+}
 
 // ============ v1.5：设置中心 ============
 // settings 自 v1.5 起带版本号（_v）。升级靠 deepMerge 而非逐版 migration 函数：
@@ -163,6 +190,8 @@ function defaultPosFor(display) {
 // 但 stdout 里已算出的有效行仍然可用，调用方按行解析并过滤空行，语义安全
 
 function createWindow() {
+  // v2.1：主窗口可能被 ⌘W 等销毁后再重建，先清掉旧的光标轮询，避免定时器泄漏
+  if (cursorTimer) { clearInterval(cursorTimer); cursorTimer = null; }
   const saved = loadState();
 
   // v1.4 F：优先落在光标所在那块屏，并按屏分别记忆位置
@@ -218,6 +247,12 @@ function createWindow() {
   // 默认点击穿透，悬停在可交互元素上时由渲染进程关闭
   win.setIgnoreMouseEvents(true, { forward: true });
 
+  // v2.1 §11：任一窗口 close 一律拦截为 hide，绝不 destroy。
+  // 否则主窗口被 ⌘W 销毁后，全局热键 toggleWindow 会对已销毁对象抛错、窗口再也回不来。
+  win.on('close', (e) => {
+    if (!isQuitting) { e.preventDefault(); win.hide(); }
+  });
+
   // v1.4 F：按窗口中心所在显示器分别记忆位置
   win.on('moved', () => {
     const [mx, my] = win.getPosition();
@@ -270,7 +305,8 @@ function showContextMenu() {
 }
 
 function toggleWindow() {
-  if (!win) return;
+  // v2.1：主窗口若已被销毁（⌘W 等），按召唤键应当重建，而不是抛 "Object has been destroyed"
+  if (!win || win.isDestroyed()) { try { createWindow(); } catch {} return; }
   win.isVisible() ? win.hide() : win.show();
 }
 
@@ -282,7 +318,7 @@ ipcMain.on('mouse-interactive', (_e, interactive) => {
 
 ipcMain.on('context-menu', showContextMenu);
 
-// v1.2 双档宽度：卡片展开时窗口加宽到 440（面板 360），保持右缘锚定
+// v1.2 双档宽度：卡片展开时窗口加宽到 440（面板 360），保持贴边锚定
 // 注意：窗口必须"瞬时"改尺寸，视觉过渡全部交给渲染层 CSS —— 两边同时做动画会互相打架导致掉帧
 ipcMain.on('panel-expand', (_e, expand) => {
   if (!win || win.isDestroyed()) return;
@@ -1133,6 +1169,7 @@ ipcMain.handle('settings-get', async () => ({
     automation: await probeFinder(true),
   },
   hotkeyRegistered,
+  stashHotkeyRegistered,
 }));
 
 ipcMain.handle('settings-set', (_e, patch) => {
@@ -1165,12 +1202,15 @@ ipcMain.handle('settings-set', (_e, patch) => {
     enforceLimit();
     broadcastClip();
   }
+  // v2.1 中转站浮窗：常驻/贴边/快捷键/不透明度等变更即时生效
+  if (JSON.stringify(before.stash) !== JSON.stringify(next.stash)) applyStashSettings(before, next);
   return {
     ...next,
     loginItem: readLoginItem(),
     stealthApps: stealthList(),
     lastFrontApp: lastForeignFront,
     hotkeyRegistered,
+    stashHotkeyRegistered,
   };
 });
 
@@ -2430,6 +2470,15 @@ app.whenReady().then(() => {
   // v1.6 D1：按 settings 注册召唤键（失败回退 ⌥Space）；⌥H 恒定兜底、不可被覆盖
   registerHotkeyFromSettings();
   globalShortcut.register('Alt+H', toggleWindow);
+  // v2.1 中转站浮窗：贴边胶囊 + 菜单栏 Tray + 独立全局快捷键（失败不静默，可改）
+  try { stash.setDir((getSettings().stash || {}).dir || ''); } catch {} // v2.5 注入中转站存储目录
+  try { createStashWindow(); } catch {}
+  createTray();
+  registerStashHotkeyFromSettings();
+  // 多显示器 / 拔屏 / 分辨率变化 → 重算吸附矩形，防窗口丢到屏外
+  screen.on('display-added', resyncStashPanel);
+  screen.on('display-removed', resyncStashPanel);
+  screen.on('display-metrics-changed', resyncStashPanel);
   // v1.6 B2-1：剪贴板采集（依 E1 开关）
   if (getSettings().clipboard.enabled) startClip();
   // v1.7 天气：启动先取一次（失败静默，不弹任何打扰），再按 F3 频率轮询
@@ -2457,7 +2506,7 @@ app.whenReady().then(() => {
   // v1.9：真正的闹钟/倒计时 —— 主进程 1s tick，到点触发（持久化保证重启不丢）
   alarmTimer = setInterval(() => alarm.tick(), 1000);
 
-  // v2.0 批次B：常用页轮询（F1 电量提醒 60s / F4 循环提醒 60s）
+  // v2.0 批次B：常用页轮询（F1 电量提醒 30s / F4 循环提醒 60s）
   startV2Polling();
 
   // 自动化自检模式：MIO_AUTOTEST=1 时走查核心交互并截图留证
@@ -3297,6 +3346,9 @@ app.on('will-quit', () => {
   if (alarmTimer) clearInterval(alarmTimer); // v1.9 倒计时 tick
   if (batteryTimer) clearInterval(batteryTimer); // v2.0 F1 电量提醒
   if (privacyTimer) clearInterval(privacyTimer); // v2.0 F2 隐私占用
+  if (stashPanelTimer) clearInterval(stashPanelTimer); // v2.1 中转站浮窗心跳
+  if (stashDragTimer) clearTimeout(stashDragTimer);    // v2.1 拖出安全网计时器
+  destroyTray(); // v2.1 销毁菜单栏图标
   stopClip(); // v1.6：停轮询，内存里的剪贴板历史随进程一起消失
 });
 
@@ -3304,14 +3356,8 @@ app.on('will-quit', () => {
 // 最小可验证步进：v2-ping 探活通道（渲染层 window.mio.v2.ping 调用）
 ipcMain.handle('v2-ping', () => ({ ok: true, pong: Date.now() }));
 
-// ---- F1 电量提醒：渲染层卡片主动拉取当前电池状态（pct/charging/timeRemaining）----
-ipcMain.handle('v2-battery-info', () => {
-  const info = batteryInfo();
-  if (!info) return { ok: true, present: false };
-  return { ok: true, present: true, pct: info.pct, charging: info.charging };
-});
-
-// ---- F1 电量提醒（60s 轮询；低电量→提醒充电；充满且未拔→提醒拔电）----
+// ---- F1 电量提醒（30s 轮询；三档：低电量提醒充电 / 充电到阈值提醒拔电 / 充满 100% 再提醒拔电）----
+// 提醒方式：仅 macOS 系统通知（不写消息中心，用户明确不要留痕）。
 // 免打扰判据：健康提醒的免打扰时段（quietFrom ~ quietTo，跨零点）
 function v2InQuietHours() {
   const h = getSettings().health || {};
@@ -3323,43 +3369,34 @@ function v2InQuietHours() {
   return from < to ? (now >= from && now < to) : (now >= from || now < to);
 }
 
-// 电量提醒主逻辑：只在电量档位「越过阈值」时提醒一次，避免每 60s 轰炸
+// 电量提醒主逻辑：三档（低电量 / 充电到阈值 / 充满 100%），各档独立去重。
+// 档位判定交给纯函数模块 battery.decideAlert（可单测）；本函数只负责 IO + 发通知。
 function batteryTick() {
   const s = getSettings().battery || {};
-  if (!s.enabled) return;
+  if (!s.enabled) return;                        // 总开关关闭 → 静默后台运行
   const info = batteryInfo();
-  if (!info) return; // 台式机无电池，静默
-  if (v2InQuietHours()) return; // 免打扰时段静默
-  const lang = resolveLang(getSettings().general.lang);
-  const pct = info.pct;
+  if (!info) return;                             // 台式机 / 虚拟机无电池 → 静默
+  if (v2InQuietHours()) return;                  // 免打扰时段 → 静默
+
   const low = Number(s.low) || 20;
   const full = Number(s.full) || 80;
-  // 低电量：首次进入该档位（或从更低档回升后再次进入）才提醒
-  if (pct <= low && !info.charging) {
-    if (batteryNotifiedLevel !== 'low') {
-      batteryNotifiedLevel = 'low';
-      const title = i18nT('battery.low.title', { lang });
-      const body = i18nT('battery.low.body', { lang, vars: { level: pct } });
-      logMessage(title, body);
-      new Notification({ title, body, silent: false }).show();
-    }
-    return;
-  }
-  // 满电：达到阈值且未拔电源才提醒（离开满电档后重置，下次充满再提醒）
-  if (pct >= full && info.charging) {
-    if (batteryNotifiedLevel !== 'full') {
-      batteryNotifiedLevel = 'full';
-      const title = i18nT('battery.full.title', { lang });
-      const body = i18nT('battery.full.body', { lang, vars: { level: pct } });
-      logMessage(title, body);
-      new Notification({ title, body, silent: false }).show();
-    }
-    return;
-  }
-  // 中间档：重置已提醒状态（下次再进低/满档会重新提醒）
-  if (batteryNotifiedLevel !== null && pct > low && pct < full) {
-    batteryNotifiedLevel = null;
-  }
+  const { level, notify, nextLevel } = battery.decideAlert({
+    pct: info.pct, charging: info.charging, low, full, lastLevel: batteryNotifiedLevel,
+  });
+  batteryNotifiedLevel = nextLevel;              // 记录当前档位（离开档位即重置为 null）
+  if (!notify) return;
+
+  const lang = resolveLang(getSettings().general.lang);
+  const keys = {
+    low: ['battery.low.title', 'battery.low.body'],
+    full: ['battery.full.title', 'battery.full.body'],
+    charged: ['battery.charged.title', 'battery.charged.body'],
+  }[level];
+  if (!keys) return;
+  // 中英文案占位符不同（zh 用 {level}，en 用 {p}），两套都填，避免任一语言残留占位符。
+  const title = i18nT(keys[0], { lang });
+  const body = i18nT(keys[1], { lang, vars: { level: info.pct, p: info.pct } });
+  new Notification({ title, body, silent: false }).show();
 }
 
 // ---- F6 网络 IP（内网 ipconfig / 公网 api.ip.sb，24h 缓存）----
@@ -3407,26 +3444,730 @@ ipcMain.handle('v2-clip-image-list', () => {
 });
 
 // ---- F10 文件暂存区（只存路径引用，绝不移动/复制/删除源文件）----
+// v2.1：add 支持多路径（拖入 / 选取批量）；remove/clear 后广播 stash-changed 保持两侧同步。
 ipcMain.handle('v2-stash-list', () => ({ ok: true, items: stash.list() }));
+
+// 加入成功的提示统一走消息中心（i18n），与既有行为一致
+function notifyStashAdded(name) {
+  const lang = resolveLang(getSettings().general.lang);
+  logMessage(i18nT('stash.added.title', { lang }), i18nT('stash.added.body', { lang, vars: { name, path: name } }));
+}
+
 ipcMain.handle('v2-stash-add', (_e, payload) => {
-  const r = stash.add(payload || {});
+  const p = payload || {};
+  const paths = Array.isArray(p.paths) ? p.paths : (p.path ? [p.path] : []);
+  if (!paths.length) return stash.add(''); // 复用「路径为空」错误
+  const added = [];
+  const failed = [];
+  const stashDirCfg = (getSettings().stash || {}).dir || '';
+  for (const raw of paths) {
+    const r = stash.add({ path: raw }, stashDirCfg);
+    if (r.ok) added.push(r.item);
+    else failed.push({ path: String(raw), error: r.error });
+  }
+  if (added.length) {
+    notifyStashAdded(added.length === 1 ? added[0].name : `(${added.length} 项)`);
+    broadcastStash();
+    refreshTrayMenu();
+  }
+  // v2.7：把失败原因写进诊断日志（渲染层 toast 也据此展示真实原因，不再笼统「加入失败」）
+  stashTrace('add paths=' + JSON.stringify(paths) + ' added=' + added.length + ' failed=' + JSON.stringify(failed));
+  return { ok: added.length > 0, items: stash.list(), added: added.length, failed };
+});
+
+ipcMain.handle('v2-stash-remove', async (_e, payload) => {
+  const id = typeof payload === 'string' ? payload : (payload && payload.id);
+  const r = await stash.remove(id);
   if (r.ok) {
-    const name = r.item ? r.item.name : '';
-    const lang = resolveLang(getSettings().general.lang);
-    const title = i18nT('stash.added.title', { lang });
-    const body = i18nT('stash.added.body', { lang, vars: { name } });
-    logMessage(title, body);
+    // v2.1 P2-1：条目移除后清掉其拖影图标缓存，避免 Map 无限增长
+    if (id) stashDragIconCache.delete(id);
+    broadcastStash();
+    refreshTrayMenu();
   }
   return r;
 });
-ipcMain.handle('v2-stash-remove', (_e, payload) => stash.remove(payload && payload.id));
-ipcMain.handle('v2-stash-clear', () => stash.clear());
+
+ipcMain.handle('v2-stash-clear', async () => {
+  const r = await stash.clear();
+  stashDragIconCache.clear(); // v2.1 P2-1：清空列表 → 一并清空拖影图标缓存
+  broadcastStash();
+  refreshTrayMenu();
+  return r;
+});
+
+// 从节点 id 还原真实绝对路径（ID-only 安全规则：渲染层永远拿不到路径）
+function stashPathForId(id) {
+  if (!id) return null;
+  const it = stash.list().find((x) => x.id === id);
+  return it ? it.path : null;
+}
+
+ipcMain.handle('v2-stash-reveal', (_e, payload) => {
+  const fp = stashPathForId(payload && payload.id);
+  if (!fp) return { ok: false, error: '未找到该条目' };
+  try { shell.showItemInFolder(fp); return { ok: true }; }
+  catch (err) { return { ok: false, error: String((err && err.message) || err).slice(0, 120) }; }
+});
+
+ipcMain.handle('v2-stash-open', async (_e, payload) => {
+  const fp = stashPathForId(payload && payload.id);
+  if (!fp) return { ok: false, error: '未找到该条目' };
+  const err = await shell.openPath(fp);
+  return err ? { ok: false, error: err } : { ok: true };
+});
+
+ipcMain.handle('v2-stash-copy-path', (_e, payload) => {
+  const fp = stashPathForId(payload && payload.id);
+  if (!fp) return { ok: false };
+  clipboard.writeText(fp);
+  return { ok: true };
+});
+
+// 选取并加入（无拖拽时的投递入口；复用 stash.add 的存在性/去重/上限校验）
+ipcMain.handle('v2-stash-pick', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '加入中转站',
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true, items: stash.list() };
+    const added = [];
+    const stashDirCfg = (getSettings().stash || {}).dir || '';
+    for (const raw of filePaths) {
+      const r = stash.add({ path: raw }, stashDirCfg);
+      if (r.ok) added.push(r.item);
+    }
+    if (added.length) {
+      notifyStashAdded(added.length === 1 ? added[0].name : `(${added.length} 项)`);
+      broadcastStash();
+      refreshTrayMenu();
+    }
+    return { ok: added.length > 0, items: stash.list(), added: added.length, canceled: false };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err).slice(0, 120), items: stash.list() };
+  }
+});
+
+// v2.5 中转站存储目录：选择（目录选择器 + 落盘）/ 打开（访达）/ 查询
+ipcMain.handle('v2-stash-pick-dir', async () => {
+  try {
+    const cur = stash.stashDir();
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '选择中转站存放目录',
+      defaultPath: cur,
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true, dir: cur };
+    const dir = filePaths[0];
+    patchSettings({ stash: { dir } });
+    stash.setDir(dir);
+    broadcastStash();
+    return { ok: true, dir };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err).slice(0, 120), dir: stash.stashDir() };
+  }
+});
+ipcMain.handle('v2-stash-open-dir', async () => {
+  const dir = stash.stashDir();
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  const err = await shell.openPath(dir);
+  return err ? { ok: false, error: err, dir } : { ok: true, dir };
+});
+ipcMain.handle('v2-stash-get-dir', () => ({ ok: true, dir: stash.stashDir(), custom: !!((getSettings().stash || {}).dir) }));
+
+// ===================== v2.1 中转站浮窗：窗口 / 状态机 / Tray =====================
+
+// 广播：任一来源（drop/pick/remove/清空）后同步所有窗口的列表与计数
+function broadcastStash() {
+  const items = stash.list();
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w || w.isDestroyed()) continue;
+    try { w.webContents.send('stash-changed', { items }); } catch {}
+  }
+}
+
+// 浮窗目标显示器：优先 appearance.displayId，其次光标所在屏，最后主屏（§12.3：v1 只在一屏显示）
+function stashTargetDisplay(settings) {
+  const ap = (settings || getSettings()).appearance || {};
+  let d = null;
+  if (ap.displayId) d = screen.getAllDisplays().find((x) => String(x.id) === String(ap.displayId));
+  if (!d) { try { d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()); } catch {} }
+  return d || screen.getPrimaryDisplay();
+}
+function stashWorkArea(settings) {
+  const d = stashTargetDisplay(settings);
+  return (d && (d.workArea || d.bounds)) || { x: 0, y: 0, width: 1440, height: 900 };
+}
+function currentCursorPoint() { try { return screen.getCursorScreenPoint(); } catch { return null; } }
+// v2.10 注入货架展开运行时状态：stashPanel 是纯函数，shelfExpanded 不能从持久设置读，
+// 每次 resolve 前把它写进 settings.stash，几何层 stashCfg 据此算 top/bottom 货架高度。
+function stashPanelSettings() {
+  const s = getSettings();
+  if (s && s.stash) s.stash.shelfExpanded = stashShelfExpanded;
+  return s;
+}
+function stashCtx() {
+  return {
+    workArea: stashWorkArea(),
+    settings: stashPanelSettings(),
+    cursor: currentCursorPoint(),
+    now: Date.now(),
+    lastActivity: stashState ? stashState.lastActivity : Date.now(),
+  };
+}
+function pointInRectMain(pt, r) {
+  if (!pt || !r) return false;
+  return pt.x >= r.x && pt.x < r.x + r.width && pt.y >= r.y && pt.y < r.y + r.height;
+}
+
+// 通知 stashWin 切胶囊/抽屉 CSS 态（附带不透明度/贴边，供渲染层应用）
+function sendStashPanelMode() {
+  if (!stashWin || stashWin.isDestroyed()) return;
+  const s = getSettings().stash || {};
+  try {
+    stashWin.webContents.send('stash-panel-mode', {
+      mode: stashState ? stashState.mode : (s.panelEnabled !== false ? 'capsule' : 'hidden'),
+      pinned: !!(stashState && stashState.pinned),
+      opacity: typeof s.capsuleOpacity === 'number' ? s.capsuleOpacity : 0.6,
+      side: s.edgeSide || 'right',
+    });
+  } catch {}
+}
+
+// 薄封装（非纯）：只做 IO —— setBounds / setIgnoreMouseEvents / 通知渲染层 / 隐藏（§4 末尾）
+function applyPanelState(next) {
+  if (!next) return;
+  stashState = next;
+  if (stashWin && !stashWin.isDestroyed()) {
+    try {
+      if (next.mode === 'hidden') {
+        if (stashWin.isVisible()) stashWin.hide();
+      } else {
+        const r = next.rect;
+        const b = stashWin.getBounds();
+        if (b.x !== r.x || b.y !== r.y || b.width !== r.width || b.height !== r.height) {
+          stashWin.setBounds({ x: r.x, y: r.y, width: r.width, height: r.height }, false);
+        }
+        if (!stashWin.isVisible()) stashWin.showInactive();
+        // §2.5：浮窗始终可交互，绝不 setIgnoreMouseEvents(true) —— 否则 OS 拖放事件投递不到，拖入失效
+        stashWin.setIgnoreMouseEvents(!next.interactive, { forward: true });
+      }
+    } catch {}
+  }
+  sendStashPanelMode();
+}
+
+function createStashWindow() {
+  if (stashWin && !stashWin.isDestroyed()) return;
+  const settings = stashPanelSettings(); // v2.10 注入 shelfExpanded 运行时态
+  const st = stashPanel.resolvePanelState(null, 'INIT', {
+    workArea: stashWorkArea(settings), settings, cursor: null, now: Date.now(), lastActivity: Date.now(),
+  });
+  stashState = st;
+  stashWin = new BrowserWindow({
+    width: st.rect.width,
+    height: st.rect.height,
+    x: st.rect.x,
+    y: st.rect.y,
+    show: st.mode !== 'hidden',
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,        // 位置由吸附算法控制，不给用户手动拖（避免与桌宠手拖冲突）
+    alwaysOnTop: true,     // 常驻置顶，独立于 appearance.onTop（胶囊必须可见）
+    skipTaskbar: true,
+    hasShadow: false,
+    fullscreenable: false,
+    minimizable: false,
+    maximizable: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'), // 复用同一个 preload
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  stashWin.setAlwaysOnTop(true, 'floating');
+  stashWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  stashWin.setIgnoreMouseEvents(false); // §2.5 拖入需要窗口始终接收鼠标事件
+  stashWin.loadFile(path.join(__dirname, 'renderer', 'stash.html'));
+
+  // §2.4 防御式：非退出时 close 一律拦截为 hide，绝不 destroy（防连带 window-all-closed 退出 App）
+  stashWin.on('close', (e) => {
+    if (!isQuitting) { e.preventDefault(); hideStashPanel(); }
+  });
+  stashWin.webContents.on('did-finish-load', () => {
+    sendStashPanelMode();
+    broadcastStash();
+  });
+  stashWin.on('closed', () => { stashWin = null; });
+
+  startStashEdgePolling();
+}
+
+function ensureStashWindow() {
+  if (stashWin && !stashWin.isDestroyed()) return true;
+  try { createStashWindow(); } catch { stashWin = null; }
+  return !!(stashWin && !stashWin.isDestroyed());
+}
+
+function showStashPanel() {
+  if (!ensureStashWindow()) return;
+  applyPanelState(stashPanel.resolvePanelState(stashState, 'SHOW', stashCtx()));
+  refreshTrayMenu();
+}
+function hideStashPanel() {
+  if (!ensureStashWindow()) return;
+  applyPanelState(stashPanel.resolvePanelState(stashState, 'HIDE', stashCtx()));
+  refreshTrayMenu();
+}
+function toggleStashPanel() {
+  if (!ensureStashWindow()) return;
+  const event = stashState && stashState.mode === 'open' ? 'TOGGLE' : 'SHOW';
+  applyPanelState(stashPanel.resolvePanelState(stashState, event, stashCtx()));
+  refreshTrayMenu();
+}
+// v2.1 P1-1：抽屉「收起」= 回到胶囊态（贴边细条仍在），不是整个隐藏。
+// 只有「设置里关掉常驻胶囊」(panelEnabled=false) 与窗口 close 兜底才走彻底隐藏 hideStashPanel。
+function collapseStashPanel() {
+  if (!ensureStashWindow()) return;
+  if (stashState && stashState.mode === 'open') {
+    // v2.1 P2-2：若设置里关掉「常驻胶囊」，收起应彻底隐藏（HIDE），不能冒出胶囊（与设置相悖）；
+    //            否则回胶囊态（TOGGLE：open→capsule）。
+    const enabled = (getSettings().stash || {}).panelEnabled !== false;
+    const event = enabled ? 'TOGGLE' : 'HIDE';
+    applyPanelState(stashPanel.resolvePanelState(stashState, event, stashCtx()));
+  }
+  refreshTrayMenu();
+}
+// 显示器变化 / 设置变更后重算吸附矩形（不改 mode/pinned）
+function resyncStashPanel() {
+  if (!ensureStashWindow()) return;
+  applyPanelState(stashPanel.resolvePanelState(stashState, 'RESYNC', stashCtx()));
+}
+
+// 300ms 心跳：边缘热区检测 + 光标进出判定 + 自动收起兜底
+function startStashEdgePolling() {
+  if (stashPanelTimer) return;
+  stashPanelTimer = setInterval(stashPanelTick, 300);
+}
+function stashPanelTick() {
+  if (!stashWin || stashWin.isDestroyed() || !stashState) return;
+  const settings = stashPanelSettings(); // v2.10 注入 shelfExpanded 运行时态
+  const sp = settings.stash || {};
+  const cursor = currentCursorPoint();
+
+  // 1) 已收起（hidden/capsule）：撞屏缘热区 → 展开（edgeHot 关闭则永不命中）
+  if (sp.edgeHot && stashState.mode !== 'open' && cursor) {
+    if (stashPanel.hitEdge(cursor, stashWorkArea(settings), settings)) {
+      applyPanelState(stashPanel.resolvePanelState(stashState, 'HOVER_IN', stashCtx()));
+      stashHovering = true;
+      return;
+    }
+  }
+
+  // 2) 展开态：光标进入/离开 → 刷新活动时间（边沿触发，收起延时从「离开」开始计）
+  if (stashState.mode === 'open') {
+    const over = pointInRectMain(cursor, stashState.rect);
+    if (over && !stashHovering) {
+      applyPanelState(stashPanel.resolvePanelState(stashState, 'HOVER_IN', stashCtx()));
+    } else if (!over && stashHovering) {
+      stashState = stashPanel.resolvePanelState(stashState, 'HOVER_OUT', stashCtx());
+    }
+    stashHovering = over;
+  } else {
+    stashHovering = false;
+  }
+
+  // 3) 心跳兜底：满足条件则自动收起
+  const next = stashPanel.resolvePanelState(stashState, 'TICK', stashCtx());
+  if (next.mode !== stashState.mode) applyPanelState(next);
+  else stashState = next; // 保留最新 lastActivity，不触发多余 IO
+}
+
+// ---- 浮窗 IPC：形态控制（§7）----
+ipcMain.handle('v2-stash-panel-state', () => {
+  const s = getSettings().stash || {};
+  return {
+    ok: true,
+    mode: stashState ? stashState.mode : (s.panelEnabled !== false ? 'capsule' : 'hidden'),
+    pinned: !!(stashState && stashState.pinned),
+    side: s.edgeSide || 'right',
+  };
+});
+ipcMain.on('v2-stash-panel-toggle', () => toggleStashPanel());
+ipcMain.on('v2-stash-panel-show', () => showStashPanel());
+// §7 契约里的「收起」= 回到胶囊态（P1-1）；彻底隐藏仅由「设置关掉常驻胶囊」触发
+ipcMain.on('v2-stash-panel-hide', () => collapseStashPanel());
+ipcMain.on('v2-stash-panel-hover', (_e, payload) => {
+  // 渲染层可选的 hover 心跳：仅刷新活动时间（主进程轮询仍是权威来源）
+  if (stashState && stashState.mode === 'open' && payload && payload.over) stashState.lastActivity = Date.now();
+});
+// v2.10 货架展开/收起：渲染层点击 ▾/▴ 时通知主进程，重算货架面板高度（2行 ⇄ 3行）。
+// shelfExpanded 是运行时状态，不落盘；resyncStashPanel 会重新 resolve + setBounds。
+ipcMain.on('v2-stash-shelf-expand', (_e, expanded) => {
+  const next = !!expanded;
+  if (next === stashShelfExpanded) return; // 幂等：状态未变不触发 IO
+  stashShelfExpanded = next;
+  resyncStashPanel();
+});
+ipcMain.handle('v2-stash-panel-pin', (_e, payload) => {
+  const pinned = !!(payload && payload.pinned);
+  patchSettings({ stash: { pinned } });
+  if (!ensureStashWindow()) return { ok: true, pinned };
+  let next = { ...stashState, pinned };
+  if (pinned && next.mode !== 'open') next = stashPanel.resolvePanelState(next, 'SHOW', stashCtx());
+  applyPanelState(next);
+  refreshTrayMenu();
+  return { ok: true, pinned };
+});
+
+// ---- 浮窗 IPC：拖出（必须主进程发起 startDrag；icon 不能为空）§5.2 ----
+// v2.1 P2-3：startDrag 必须在 dragstart 的同步窗口内立即调用，任何 await 都会错过时机。
+// v2.1 P2-1：图标按「节点 id」缓存进 Map（列表悬停时预热带入），拖拽那一刻同步命中 → 拖影即该项真实文件图标；
+//            未命中则回退通用模板图。铁律：绝不为拿真实图标在 dragstart 之后引入 await。
+const stashDragIconCache = new Map(); // id -> nativeImage（该项真实文件图标）
+let stashDragIconFallback = null;     // 通用模板图（同步兜底，保证 startDrag 的 icon 非空）
+
+// v2.6 最后兜底：内联 16×16 RGBA 模板图（半透明灰方块），保证 icon 永不 empty。
+// 打包后 build/ 与内存模板图链路都可能失手，此时仍需一个合法非空 icon，否则 macOS 直接不发起拖拽。
+const STASH_DRAG_FALLBACK_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR4nGNoaGg4QwlmGDVg1IBRA4aLAQA4BkwfZZdvngAAAABJRU5ErkJggg==';
+
+// 同步构造默认拖拽图标（nativeImage.createFromPath 是同步的）
+function buildStashDragIconSync() {
+  for (const p of ['build/trayTemplate.png', 'build/icon.iconset/icon_32x32.png', 'build/icon.iconset/icon_16x16.png', 'build/icon.png']) {
+    try {
+      const img = nativeImage.createFromPath(path.join(__dirname, p));
+      if (img && !img.isEmpty()) return img;
+    } catch {}
+  }
+  // 打包后 build/ 可能不在 bundle 内 → 用内存模板图兜底（macOS 要求 startDrag 的 icon 非空）
+  try {
+    const { width, height, buffer } = trayIcon.makeTemplateBitmap(32);
+    const img = nativeImage.createFromBitmap(buffer, { width, height });
+    if (!img.isEmpty()) return img;
+  } catch {}
+  // 最后兜底：内联 base64 PNG → 保证 icon 绝不为空（绝不返回 createEmpty）
+  try {
+    const img = nativeImage.createFromBuffer(Buffer.from(STASH_DRAG_FALLBACK_PNG_B64, 'base64'));
+    if (img && !img.isEmpty()) return img;
+  } catch {}
+  return nativeImage.createEmpty();
+}
+function getStashDragFallback() {
+  if (!stashDragIconFallback || stashDragIconFallback.isEmpty()) stashDragIconFallback = buildStashDragIconSync();
+  return stashDragIconFallback;
+}
+// 同步取图标：命中按 id 缓存的真实图标则用真实图标，否则回退通用模板图（全程同步，满足 startDrag 时机铁律）
+function ensureStashDragIcon(id) {
+  const cached = id ? stashDragIconCache.get(id) : null;
+  if (cached && !cached.isEmpty()) return cached;
+  return getStashDragFallback();
+}
+// 后台预热：按 id 缓存该节点的真实文件图标（异步、不阻塞；由列表悬停 / 拖拽后触发）
+async function warmStashDragIconById(id) {
+  if (!id || stashDragIconCache.has(id)) return;
+  const fp = stashPathForId(id);
+  if (!fp) return;
+  try {
+    const img = await app.getFileIcon(fp, { size: 'normal' });
+    if (img && !img.isEmpty()) stashDragIconCache.set(id, img.resize({ width: 48, height: 48 }));
+  } catch {}
+}
+// 悬停预热通道：列表项 mouseenter → 主进程缓存该项真实图标，供随后拖拽同步命中
+ipcMain.on('v2-stash-warm-icon', (_e, payload) => {
+  const id = typeof payload === 'string' ? payload : (payload && payload.id);
+  warmStashDragIconById(id);
+});
+
+// v2.6 渲染层→主进程 trace 信道（证明材料：DOM 事件确实派发到主进程）
+ipcMain.on('v2-stash-trace', (_e, m) => stashTrace('renderer ' + m));
+
+ipcMain.on('v2-stash-drag-out', (_e, payload) => {
+  const ids = payload && payload.ids;
+  stashTrace('drag-out ids=' + JSON.stringify(ids || null));
+  if (!stashWin || stashWin.isDestroyed()) { stashTrace('drag-out aborted: stashWin 不可用'); return; }
+  const idList = Array.isArray(ids) ? ids : (ids ? [ids] : []);
+  const picked = stash.list().filter((it) => idList.includes(it.id) && it.exists);
+  // 记录每个请求 id 是否命中且文件存在（诊断「拖出无反应」是查表为空还是 startDrag 失败）
+  stashTrace('drag-out picked=' + picked.length + ' exists=' + JSON.stringify(
+    idList.reduce((m, id) => {
+      const hit = stash.list().find((it) => it.id === id);
+      m[id] = !!(hit && hit.exists);
+      return m;
+    }, {}),
+  ));
+  if (!picked.length) { stashTrace('drag-out aborted: 无可拖出条目'); return; }
+  const firstId = picked[0].id;
+
+  const filePaths = picked.map((it) => it.path);
+  const icon = ensureStashDragIcon(firstId); // 同步：命中缓存则真实图标，否则通用模板图
+
+  // v2.6 P2-1：先发起原生拖拽，再做窗口形变（setBounds）。窗口若在 startDrag 前一刻改变几何，
+  //            会使拖拽源失效 —— 这是「拖出无反应、连拖拽光标都不出现」的头号嫌疑。
+  stashTrace('startDrag 前 iconIsEmpty=' + icon.isEmpty() + ' fileCount=' + filePaths.length);
+  try {
+    // 同时给 file 与 files 两个键：不同 Electron 版本的解析优先级不同，两者都给可杜绝误判（files 覆盖 file）
+    stashWin.webContents.startDrag({ file: filePaths[0], files: filePaths, icon });
+    stashTrace('startDrag 后 iconIsEmpty=' + icon.isEmpty() + ' fileCount=' + filePaths.length);
+  } catch (err) {
+    // 绝不静默吞掉：把真实异常写进 trace
+    stashTrace('startDrag threw: ' + (err && err.message ? err.message : String(err)));
+    // 多文件降级：仅拖出第一项，保证单文件链路一定通
+    try {
+      stashWin.webContents.startDrag({ file: filePaths[0], icon });
+      stashTrace('startDrag 降级重试成功 fileCount=1');
+    } catch (err2) {
+      stashTrace('startDrag 降级重试 threw: ' + (err2 && err2.message ? err2.message : String(err2)));
+    }
+  }
+
+  // 拖拽发起后再锁展开（禁止自动收起），把 dragging 同步推给状态机
+  applyPanelState(stashPanel.resolvePanelState(stashState, 'DRAG_ENTER', stashCtx()));
+
+  // 本次拖拽已发起，再后台预热首项真实图标（不阻塞，供下次使用）
+  warmStashDragIconById(firstId);
+
+  // 安全网：若渲染层未回 drag-end，2.5s 后复位 dragging
+  if (stashDragTimer) clearTimeout(stashDragTimer);
+  stashDragTimer = setTimeout(() => {
+    if (stashState && stashState.dragging) {
+      stashState = stashPanel.resolvePanelState(stashState, 'DRAG_LEAVE', stashCtx());
+    }
+  }, 2500);
+});
+
+// ---- v2.7 一键 AirDrop 投送：改用 clang 编译的原生 helper（真正常驻的 [NSApp run] 事件循环）----
+// 根因（已实证）：osascript 是 CLI 进程、osacompile 生成的 applet 在 on run 返回后立即退出，
+//   二者都没有常驻 NSApplication 事件循环 —— NSSharingService 的分享面板会随之被销毁，用户永远看不到面板。
+// 修复：原生 helper 用 [NSApp run] 把 run loop 跑起来，直到投送成功 / 失败 / 面板关闭才退出。
+const AIRDROP_HELPER = path.join(__dirname, 'build', 'airdrop-helper');
+
+// 一次性清掉 v2.6 废弃的 applet 产物（osacompile 产物 + 脚本源 + 占位文件），避免在 userData 长期滞留。
+// 这些是本 App 自己生成的内部临时产物（非用户文件），故直接删除、不丢进废纸篓。
+function cleanLegacyAirDropApplet() {
+  const userData = app.getPath('userData');
+  for (const p of [
+    path.join(userData, 'MioAirDrop.app'),
+    path.join(userData, 'mio-airdrop.applescript'),
+    path.join(userData, 'mio-airdrop-target.txt'),
+    path.join(userData, 'mio-airdrop-error.log'),
+  ]) {
+    try { if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// 兜底：沿用旧的 osascript -e 路径（同样 trace），保证 IPC 永不抛
+function runAirDropFallback(fp) {
+  const safe = String(fp).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const script = [
+    'use framework "Foundation"',
+    'use framework "AppKit"',
+    'use scripting additions',
+    'set theURL to (current application\'s |NSURL|\'s fileURLWithPath:"' + safe + '")',
+    'set svc to (current application\'s NSSharingService\'s sharingServiceNamed:(current application\'s NSSharingServiceNameSendViaAirDrop))',
+    'svc\'s performWithItems:{theURL}',
+  ].join('\n');
+  try {
+    execFile('osascript', ['-e', script], (err, _out, stderr) => {
+      const code = err ? (typeof err.code === 'number' ? err.code : 'err') : 0;
+      stashTrace('airdrop fallback osascript exit=' + code + ' stderr=' + (stderr || '') + (err && err.message ? ' err=' + err.message : ''));
+    });
+  } catch (e) { stashTrace('airdrop fallback threw: ' + (e && e.message)); }
+}
+
+ipcMain.on('v2-stash-airdrop', (_e, payload) => {
+  try {
+    const id = typeof payload === 'string' ? payload : (payload && payload.id);
+    if (!id) { stashTrace('airdrop aborted: 无 id'); return; }
+    const fp = stashPathForId(id);
+    if (!fp) { stashTrace('airdrop id=' + id + ' path=<缺失>'); return; }
+    stashTrace('airdrop id=' + id + ' path=' + fp);
+
+    cleanLegacyAirDropApplet(); // v2.6 applet 遗留一次性清理
+
+    // helper 缺失 / 不可执行 → 记录并降级到 osascript（功能退化但不静默空动作）
+    let helperOk = false;
+    try { fs.accessSync(AIRDROP_HELPER, fs.constants.X_OK); helperOk = true; } catch {}
+    if (!helperOk) {
+      stashTrace('airdrop helper 缺失/不可执行: ' + AIRDROP_HELPER + ' → 走 osascript 兜底');
+      runAirDropFallback(fp);
+      return;
+    }
+
+    // 与 stashTrace 共用同一份诊断日志（helper 内每行带 [helper] 前缀）
+    const debugLog = path.join(app.getPath('userData'), 'mio-stash-debug.log');
+    stashTrace('airdrop 启动 helper path=' + AIRDROP_HELPER);
+    // 注意：helper 会一直运行到用户完成/取消（面板关闭）才退出，回调较晚返回属预期，不是卡死
+    execFile(AIRDROP_HELPER, [fp, debugLog], (err, _out, stderr) => {
+      const code = err ? (typeof err.code === 'number' ? err.code : 'err') : 0;
+      stashTrace('airdrop helper 退出 exit=' + code + ' stderr=' + (stderr || '') + (err && err.message ? ' err=' + err.message : ''));
+    });
+  } catch (e) {
+    // 铁律：IPC handler 绝不外抛
+    stashTrace('airdrop 外层异常: ' + (e && e.message));
+  }
+});
+
+ipcMain.on('v2-stash-drag-end', () => {
+  if (stashState && stashState.dragging) {
+    stashState = stashPanel.resolvePanelState(stashState, 'DRAG_LEAVE', stashCtx());
+  }
+});
+
+// ---- 浮窗独立全局快捷键（原子注册 + 失败回滚，仿主窗口 hotkey 体系 main.js:2384-2424）----
+const DEFAULT_STASH_HOTKEY = 'Alt+Shift+Space';
+const applyStashHotkey = (acc) => {
+  const next = String(acc || '').trim();
+  if (!next) return { ok: false, error: '快捷键为空' };
+  if (next === RESERVED_HOTKEY) return { ok: false, error: '与手动隐藏键冲突' };
+  if (next === DEFAULT_HOTKEY) return { ok: false, error: '与主窗口召唤键冲突' };
+  const current = (getSettings().stash || {}).hotkey || DEFAULT_STASH_HOTKEY;
+  try { globalShortcut.unregister(current); } catch {}
+  let ok = false;
+  try { ok = globalShortcut.register(next, toggleStashPanel); } catch { ok = false; }
+  if (ok) {
+    patchSettings({ stash: { hotkey: next } });
+    stashHotkeyRegistered = true;
+    return { ok: true, hotkey: next };
+  }
+  // 注册失败（被占用）→ 回滚旧值（绝不静默失败）
+  let restored = false;
+  try { restored = globalShortcut.register(current, toggleStashPanel); } catch { restored = false; }
+  stashHotkeyRegistered = restored;
+  return { ok: false, error: `这个组合被别的程序占用了，已还原为 ${accelLabel(current)}，可换个组合`, hotkey: current, restored: current };
+};
+function registerStashHotkeyFromSettings() {
+  const saved = (getSettings().stash || {}).hotkey;
+  if (!saved) { stashHotkeyRegistered = false; return false; }
+  let ok = false;
+  try { ok = globalShortcut.register(saved, toggleStashPanel); } catch { ok = false; }
+  stashHotkeyRegistered = ok;
+  // v2.1 P2-2：启动注册失败不能静默 —— 复用消息中心提示用户去设置里改一个
+  if (!ok) {
+    const lang = resolveLang(getSettings().general.lang);
+    logMessage(
+      i18nT('stash.hotkeyFail.title', { lang }),
+      // v2.1 P2-4：目标路径文案也走 i18n，避免英文通知里混入中文路径
+      i18nT('stash.hotkeyFail.body', { lang, vars: { hotkey: accelLabel(saved), path: i18nT('stash.hotkeyFail.path', { lang }) } }),
+    );
+  }
+  return ok;
+}
+ipcMain.handle('v2-stash-hotkey-record', (_e, payload) => applyStashHotkey(payload && payload.accelerator));
+ipcMain.handle('v2-stash-hotkey-reset', () => applyStashHotkey(DEFAULT_STASH_HOTKEY));
+
+// ---- 菜单栏 Tray（§6）----
+function buildTrayMenu() {
+  const items = stash.list();
+  return Menu.buildFromTemplate([
+    {
+      label: stashState && stashState.mode === 'open' ? '隐藏中转站' : '显示中转站',
+      click: () => toggleStashPanel(),
+    },
+    { type: 'separator' },
+    {
+      label: '打开设置',
+      click: () => {
+        // v2.1 P1-2：主窗口可能已被销毁 —— 先重建，再显示并切设置页（不能静默无操作）
+        if (!win || win.isDestroyed()) { try { createWindow(); } catch {} }
+        if (win && !win.isDestroyed()) {
+          try { win.show(); } catch {}
+          // v2.1 P2-3：重建场景下新窗口页面尚未加载完、渲染层 onOpenSettings 监听还没绑定，
+          // 立即 send 会丢（窗口弹出来却停在首页）→ 未加载完则等 did-finish-load 再发。
+          const wc = win.webContents;
+          const sendSettings = () => { try { wc.send('open-settings'); } catch {} };
+          if (wc.isLoading()) wc.once('did-finish-load', sendSettings);
+          else sendSettings();
+        }
+      },
+    },
+    {
+      label: `清空中转站（${items.length} 项）`,
+      enabled: items.length > 0,
+      click: () => { clearStashWithConfirm(); },
+    },
+    { type: 'separator' },
+    { label: '退出 Mio', click: () => { isQuitting = true; app.quit(); } },
+  ]);
+}
+function refreshTrayMenu() {
+  if (!tray) return;
+  try { tray.setContextMenu(buildTrayMenu()); } catch {}
+}
+// v2.1 P2-1：菜单栏图标用「单色模板图」（macOS 自动适配深浅色菜单栏），
+// 不用彩色应用图标 —— 彩色图当模板图会被压成实心剪影，观感差。
+function buildTrayImage() {
+  // 首选：构建产物 build/trayTemplate.png（含 @2x，由 build/make-tray-icon.js 生成）
+  try {
+    const p = nativeImage.createFromPath(path.join(__dirname, 'build', 'trayTemplate.png'));
+    if (p && !p.isEmpty()) { p.setTemplateImage(true); return p; }
+  } catch {}
+  // 回退：内存绘制单色模板图（黑色 + alpha，系统据此着色），零外部资源依赖
+  try {
+    const { width, height, buffer } = trayIcon.makeTemplateBitmap(18);
+    const img = nativeImage.createFromBitmap(buffer, { width, height });
+    img.setTemplateImage(true);
+    if (!img.isEmpty()) return img;
+  } catch {}
+  return nativeImage.createEmpty();
+}
+function createTray() {
+  const s = getSettings().stash || {};
+  if (!s.trayEnabled) { destroyTray(); return; }
+  if (tray) { refreshTrayMenu(); return; }
+  let img = null;
+  try { img = buildTrayImage(); } catch { img = null; }
+  try { tray = new Tray(img || nativeImage.createEmpty()); } catch { tray = null; return; } // 必须持有引用防 GC
+  try { tray.setToolTip('Mio · 中转站'); } catch {}
+  refreshTrayMenu();
+}
+function destroyTray() {
+  if (!tray) return;
+  try { tray.destroy(); } catch {}
+  tray = null;
+}
+async function clearStashWithConfirm() {
+  const items = stash.list();
+  if (!items.length) return;
+  try {
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      buttons: ['取消', '清空'],
+      defaultId: 0,
+      cancelId: 0,
+      message: `清空中转站（${items.length} 项）`,
+      detail: '只移除路径引用，不会删除任何源文件。',
+    });
+    if (response === 1) { stash.clear(); broadcastStash(); refreshTrayMenu(); }
+  } catch {}
+}
+
+// 设置变更后让浮窗相关配置即时生效（panelEnabled / trayEnabled / hotkey / 贴边 / 不透明度）
+function applyStashSettings(before, next) {
+  const bs = before.stash || {}; const ns = next.stash || {};
+  if (bs.trayEnabled !== ns.trayEnabled) { if (ns.trayEnabled) createTray(); else destroyTray(); }
+  if (bs.panelEnabled !== ns.panelEnabled) {
+    if (!ns.panelEnabled) {
+      // 关闭常驻胶囊：完全隐藏，仅靠热键/Tray 呼出
+      if (ensureStashWindow()) applyPanelState(stashPanel.resolvePanelState(stashState, 'HIDE', stashCtx()));
+    } else if (ensureStashWindow()) {
+      // 打开常驻胶囊：若当前隐藏则回到胶囊态
+      if (!stashState || stashState.mode === 'hidden') applyPanelState(stashPanel.resolvePanelState(stashState, 'INIT', stashCtx()));
+    }
+  }
+  if (bs.edgeSide !== ns.edgeSide || bs.edgeThreshold !== ns.edgeThreshold) resyncStashPanel();
+  if (bs.capsuleOpacity !== ns.capsuleOpacity) sendStashPanelMode();
+  if (bs.pinned !== ns.pinned && stashState) { stashState = { ...stashState, pinned: !!ns.pinned }; sendStashPanelMode(); }
+  if (bs.hotkey !== ns.hotkey) registerStashHotkeyFromSettings();
+  if (bs.dir !== ns.dir) stash.setDir(ns.dir); // v2.5 存储目录变更即时生效（新加入走新目录）
+}
 
 // 启动轮询：whenReady 里调用；willQuit 里清理
 function startV2Polling() {
-  // F1 电量：60s 一次（启动先跑一次，让状态即时可用）
+  // F1 电量：30s 一次（启动先跑一次，及时捕捉充电跨阈值/充满）
   batteryTick();
-  batteryTimer = setInterval(batteryTick, 60000);
+  batteryTimer = setInterval(batteryTick, 30000);
   // v2.0 批次C：F2 隐私占用 10s 轮询（先跑一次让状态即时可用）
   privacyTick();
   privacyTimer = setInterval(privacyTick, 10000);
@@ -3674,6 +4415,15 @@ ipcMain.handle('v2-backup-import', async () => {
   }
 });
 
-// 桌宠不需要 dock 图标与多窗口
+// 桌宠不需要 dock 图标；菜单栏图标（Tray）补上常驻入口
 app.dock?.hide();
-app.on('window-all-closed', () => app.quit());
+
+// v2.1 中转站：Mio 升级为「菜单栏常驻应用」（Tray + 贴边胶囊）。
+// 关闭任一窗口不再退出 App —— 退出统一走 Tray「退出 Mio」/ 右键菜单 / quit IPC。
+// isQuitting 由 before-quit 置位；stashWin 的 close 事件在非退出时被拦截为 hide（绝不 destroy）。
+app.on('before-quit', () => { isQuitting = true; });
+
+app.on('window-all-closed', () => {
+  // macOS 惯例 + 本应用靠 Tray 常驻：窗口全关也不退出。
+  // 真正的退出路径由 isQuitting 标记 / app.quit() 触发（会先触发 before-quit 置位）。
+});

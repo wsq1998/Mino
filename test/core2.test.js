@@ -1,6 +1,6 @@
 // Mio - v2.0 批次 D 纯函数层单元测试（node:test，零第三方）
 // 覆盖：sunburst（parseDu/computeOwnSize）、uninstall（kindOf）、
-//       stash（暂存引用 CRUD + 校验）。
+//       stash（v2.5 临时目录：复制入站 + 回收副本 CRUD + 校验）。
 // 运行：npm test（= node --test test/*.test.js）
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -126,18 +126,22 @@ test('stash.add 不存在的文件拒绝', () => {
   assert.equal(r.ok, false);
 });
 
-test('stash.add 成功加入并去重', () => {
+test('stash.add 复制进中转站目录并去重（源文件保留）', () => {
   const ud = freshUserData();
   const stash = require('../main/core/stash.js');
+  const dir = path.join(ud, 'stashdir');
   const p = path.join(ud, 'probe.txt');
   fs.writeFileSync(p, 'hello');
-  const r = stash.add(p);
+  const r = stash.add(p, dir);
   assert.equal(r.ok, true);
-  assert.equal(r.item.path, path.resolve(p));
+  assert.equal(r.item.srcPath, path.resolve(p));               // v2.5 记录源文件位置
   assert.equal(r.item.name, 'probe.txt');
   assert.equal(r.item.isDir, false);
-  // 重复路径拒绝
-  const dup = stash.add(p);
+  assert.equal(r.item.path, path.join(dir, 'probe.txt'));      // 持有的是目录内副本
+  assert.equal(fs.existsSync(r.item.path), true);              // 副本确实落盘
+  assert.equal(fs.existsSync(p), true);                        // 源文件仍在（未被移动/删除）
+  // 同「源文件」重复拒绝
+  const dup = stash.add(p, dir);
   assert.equal(dup.ok, false);
   assert.match(dup.error, /已在/);
   // list 反映 exists
@@ -146,19 +150,20 @@ test('stash.add 成功加入并去重', () => {
   assert.equal(listed[0].exists, true);
 });
 
-test('stash.remove/clear 删除引用（不删源文件）', () => {
+test('stash.remove/clear 移除条目（不删源文件）', async () => {
   const ud = freshUserData();
   const stash = require('../main/core/stash.js');
+  const dir = path.join(ud, 'stashdir');
   const p = path.join(ud, 'probe.txt');
   fs.writeFileSync(p, 'hello');
-  const { item } = stash.add(p);
-  const rm = stash.remove(item.id);
+  const { item } = stash.add(p, dir);
+  const rm = await stash.remove(item.id);   // v2.5：副本走废纸篓，故为 async
   assert.equal(rm.ok, true);
   assert.equal(stash.list().length, 0);
   // 源文件仍在
   assert.equal(fs.existsSync(p), true);
   // clear 幂等
-  assert.deepEqual(stash.clear(), { ok: true, items: [] });
+  assert.deepEqual(await stash.clear(), { ok: true, items: [] });
 });
 
 // 恢复 Module._load

@@ -1,0 +1,349 @@
+/* Mio · 中转站浮窗样式（v2.10）
+   胶囊态 .st--capsule / 抽屉态 .st--open / 拖拽高亮 .st--dropping / 钉住 .st--pinned
+   色值一律引用 theme.css 的 --mi-*，禁止另造色值（docs §11）。
+   注意：窗口默认透明且始终可交互（不可穿透，否则拖入失效）。 */
+
+* { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+
+html, body {
+  width: 100%; height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", sans-serif;
+  color: var(--mi-tx1);
+}
+
+#stRoot {
+  position: fixed; inset: 0;
+  /* v2.11 列表行高估算：紧凑横排条目一行 ≈ 60px（图标 + 名称 + 操作按钮横向排开）。
+     默认最多显示 2 行（--st-list-max-h），展开后 3 行（--st-list-max-h-expanded）。
+     抽屉态与货架态（.st--top/.st--bottom）共用同一套行高变量。
+     相比 v2.9 的竖排大卡片（140px/行），同样行数可容纳 2 倍以上文件，
+     面板不再被撑满，下方内容可完整展示。 */
+  --st-list-row-h: 60px;
+  --st-list-max-h: calc(var(--st-list-row-h) * 2 + 12px);
+  --st-list-max-h-expanded: calc(var(--st-list-row-h) * 3 + 12px);
+}
+
+/* ============ 胶囊态：贴边细条 ============ */
+.st-capsule {
+  display: none;
+  position: absolute; inset: 0;
+  align-items: center; justify-content: center;
+  cursor: pointer;
+  border-radius: 6px 0 0 6px;
+  background: linear-gradient(180deg, var(--mi-accent2), var(--mi-accent));
+  opacity: var(--st-capsule-opacity, 0.6);
+  box-shadow: 0 0 10px rgba(133, 183, 235, 0.55), inset 0 0 6px rgba(255, 255, 255, 0.32);
+  transition: opacity 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+.st--capsule .st-capsule { display: flex; }
+.st--capsule .st-panel { display: none; }
+.st-capsule:hover { opacity: 1; }
+.st--left .st-capsule { border-radius: 0 6px 6px 0; }
+.st--top .st-capsule { border-radius: 0 0 6px 6px; }
+.st--bottom .st-capsule { border-radius: 6px 6px 0 0; }
+
+.st-cap-grip {
+  width: 2px; height: 44px; border-radius: 2px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.6);
+}
+/* 6px 宽的细条放不下文字：这里退化成一颗「有内容」小圆点 */
+.st-cap-count {
+  position: absolute; top: 7px; left: 1px;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--mi-on-accent);
+  overflow: hidden; color: transparent; font-size: 0; line-height: 0;
+}
+
+/* 拖拽悬停高亮（胶囊态） */
+.st--capsule.st--dropping .st-capsule {
+  opacity: 1;
+  box-shadow: 0 0 16px var(--mi-accent), 0 0 30px var(--mi-accent), inset 0 0 8px rgba(255, 255, 255, 0.5);
+  animation: stPulse 0.7s ease-in-out infinite;
+}
+@keyframes stPulse {
+  0%, 100% { transform: translateX(-3px) scaleY(1); }
+  50% { transform: translateX(-3px) scaleY(1.05); }
+}
+
+/* ============ 抽屉态 ============ */
+.st-panel {
+  display: none;
+  position: absolute; inset: 0;
+  flex-direction: column;
+  border-radius: 16px 0 0 16px;
+  background: rgba(var(--mi-surface-rgb), 0.86);
+  border: 0.5px solid rgba(var(--mi-overlay-rgb), 0.1);
+  border-right: none;
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  box-shadow: -14px 0 40px rgba(0, 0, 0, 0.42);
+  overflow: hidden;
+}
+/* v2.8 打开：0.26s 缓出（cubic-bezier(0.22,1,0.36,1)），材质跟随 blur 渐变 */
+.st--open .st-panel { display: flex; animation: stDrawerIn 0.26s cubic-bezier(0.22, 1, 0.36, 1); }
+.st--open .st-capsule { display: none; }
+.st--left .st-panel {
+  border-radius: 0 16px 16px 0;
+  border-left: none;
+  border-right: 0.5px solid rgba(var(--mi-overlay-rgb), 0.1);
+  box-shadow: 14px 0 40px rgba(0, 0, 0, 0.42);
+}
+/* v2.3 顶部/底部货架（水平抽屉）：头部变左侧栏、列表纵向单列（v2.10 行数限制见下方） */
+.st--top .st-panel, .st--bottom .st-panel {
+  flex-direction: row;
+  border-top: none; border-bottom: none;
+  border-left: 0.5px solid rgba(var(--mi-overlay-rgb), 0.1);
+  border-right: 0.5px solid rgba(var(--mi-overlay-rgb), 0.1);
+}
+.st--top .st-panel { border-radius: 0 0 16px 16px; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.42); }
+.st--bottom .st-panel { border-radius: 16px 16px 0 0; box-shadow: 0 -14px 40px rgba(0, 0, 0, 0.42); }
+.st--top.st--open .st-panel, .st--bottom.st--open .st-panel { animation: stDrawerInH 0.26s cubic-bezier(0.22, 1, 0.36, 1); }
+.st--top .st-head, .st--bottom .st-head {
+  flex-direction: column; width: 92px; gap: 8px;
+  padding: 10px 8px; align-items: center; justify-content: center;
+  border-bottom: none; border-right: 0.5px solid rgba(var(--mi-overlay-rgb), 0.08);
+}
+/* v2.10 顶部/底部货架：列表行数限制见下方 v2.10 货架列表规则（默认2行/展开3行），
+   基础 .st-list 已是 flex-direction: column，货架无需再声明横向滚动。 */
+/* v2.8 打开动画：同源变形（位移 + 微缩放）+ 材质跟随（blur 渐变），对齐液态玻璃 */
+@keyframes stDrawerIn {
+  from { transform: translateX(14px) scale(0.985); opacity: 0; filter: blur(10px); }
+  to   { transform: none; opacity: 1; filter: blur(0); }
+}
+@keyframes stDrawerInH {
+  from { transform: translateY(12px) scale(0.985); opacity: 0; filter: blur(10px); }
+  to   { transform: none; opacity: 1; filter: blur(0); }
+}
+/* v2.8 收起动画：快收（0.16s ease-in forwards），材质跟随（blur 渐变）。
+   注意：.st--closing 必须声明在 .st--open .st-panel 之后（同特异性靠后覆盖）。 */
+@keyframes stDrawerOut {
+  to { transform: translateX(12px) scale(0.97); opacity: 0; filter: blur(8px); }
+}
+.st--closing .st-panel { animation: stDrawerOut 0.16s ease-in forwards; }
+/* top/bottom 货架：.st--top.st--open .st-panel 特异性 (0,3,0) 高于 .st--closing .st-panel (0,2,0)，
+   必须用同特异性规则后置覆盖，否则 top/bottom 收起动画不生效；方向镜像 stDrawerInH 用竖直位移。 */
+@keyframes stDrawerOutH {
+  to { transform: translateY(10px) scale(0.97); opacity: 0; filter: blur(8px); }
+}
+.st--top.st--closing .st-panel, .st--bottom.st--closing .st-panel { animation: stDrawerOutH 0.16s ease-in forwards; }
+
+/* 头部 */
+.st-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 11px 7px;
+  border-bottom: 0.5px solid rgba(var(--mi-overlay-rgb), 0.08);
+}
+.st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mi-accent); box-shadow: 0 0 8px var(--mi-accent); }
+.st-title { font-size: 12px; font-weight: 600; color: var(--mi-tx1); }
+.st-count { font-size: 11px; color: var(--mi-tx3); }
+.st-spacer { flex: 1; }
+.st-ic {
+  width: 24px; height: 24px; border-radius: 8px;
+  border: 0.5px solid rgba(var(--mi-overlay-rgb), 0.14);
+  background: rgba(var(--mi-overlay-rgb), 0.06);
+  color: var(--mi-tx2); font-size: 12px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.st-ic:hover { background: color-mix(in srgb, var(--mi-accent) 20%, transparent); color: var(--mi-tx1); }
+.st-ic.on { background: color-mix(in srgb, var(--mi-accent) 30%, transparent); border-color: var(--mi-accent); color: var(--mi-tx1); }
+/* v2.9 展开列表按钮：复用 .st-ic，展开态高亮 */
+.st--expanded #stExpandBtn { background: color-mix(in srgb, var(--mi-accent) 30%, transparent); border-color: var(--mi-accent); color: var(--mi-tx1); }
+
+/* 列表基础布局（v2.9：overflow / max-height 收口到形态作用域，见下方） */
+.st-list {
+  flex: 1; padding: 6px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+/* v2.13 右侧抽屉（垂直态）：列表填满面板高度、整体上下滚动查看全部内容，不再留下方空白。
+   移除原先的 max-height 限高（2行/3行）——面板本身够高，列表 flex:1 撑满到页脚上方，
+   overflow-y: auto 让所有内容在区域内滚动。仅作用于垂直抽屉态。 */
+.st--left .st-list, .st--right .st-list {
+  overflow-y: auto; overflow-x: hidden;
+  max-height: none;
+}
+/* v2.13 展开态：同样填满面板（抽屉态下「展开」仅切换 class，高度由面板决定） */
+.st--left.st--expanded .st-list, .st--right.st--expanded .st-list {
+  overflow-y: auto;
+  max-height: none;
+}
+/* v2.12 顶部/底部货架：默认在 2 行面板内直接上下滚动（overflow-y: auto），无需点「展开」。
+   列表不再独立限高（max-height: none）——面板高度已由主进程按行数 setBounds（2行=144/3行=204），
+   列表 flex:1 填满面板高度，靠 overflow-y: auto 在 2/3 行内滚动查看其余文件。
+   必须声明在 .st--left/.st--right 规则之后（同单类特异性，后声明者赢）。 */
+.st--top .st-list, .st--bottom .st-list {
+  overflow-y: auto; overflow-x: hidden;
+  max-height: none;
+}
+.st--top.st--expanded .st-list, .st--bottom.st--expanded .st-list {
+  overflow-y: auto;
+  max-height: none;
+}
+/* v2.12 货架态（top/bottom）是横向布局：.st-foot 页脚若保留会被当成横向 flex 子项，
+   占据面板近一半宽度、把文件列表挤到 254px 并制造大片空白。货架态隐藏页脚，让列表撑满剩余宽度。 */
+.st--top .st-foot, .st--bottom .st-foot { display: none; }
+.st-list::-webkit-scrollbar { width: 6px; }
+.st-list::-webkit-scrollbar-thumb { background: rgba(var(--mi-overlay-rgb), 0.16); border-radius: 3px; }
+
+.st-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 9px;
+  border: 0.5px solid transparent;
+  cursor: grab;
+  transition: background 0.12s, border-color 0.12s;
+}
+.st-item:hover { background: rgba(var(--mi-overlay-rgb), 0.06); border-color: rgba(var(--mi-overlay-rgb), 0.08); }
+.st-item:active { cursor: grabbing; }
+.st-item--missing { opacity: 0.55; cursor: default; }
+.st-item-badge { font-size: 16px; width: 22px; text-align: center; flex: 0 0 auto; }
+.st-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.st-item-name { font-size: 12px; color: var(--mi-tx1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-item-sub { font-size: 10px; color: var(--mi-tx3); }
+.st-item-acts { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; flex: 0 0 auto; }
+.st-item:hover .st-item-acts { opacity: 1; }
+.st-mini {
+  width: 22px; height: 22px; border-radius: 7px; border: none;
+  background: rgba(var(--mi-overlay-rgb), 0.08); color: var(--mi-tx2);
+  font-size: 11px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.st-mini:hover { background: color-mix(in srgb, var(--mi-accent) 24%, transparent); color: var(--mi-tx1); }
+.st-mini--del:hover { background: color-mix(in srgb, var(--mi-danger) 28%, transparent); color: var(--mi-danger); }
+
+/* 空态 / 页脚 */
+.st-empty {
+  padding: 18px 16px; margin: 8px;
+  text-align: center; font-size: 11px; line-height: 1.7;
+  color: var(--mi-tx3);
+  border: 1px dashed rgba(var(--mi-overlay-rgb), 0.14);
+  border-radius: 12px;
+}
+.st-foot {
+  padding: 8px 12px 10px;
+  font-size: 10px; color: var(--mi-tx4);
+  border-top: 0.5px solid rgba(var(--mi-overlay-rgb), 0.08);
+  text-align: center;
+}
+
+/* 拖拽悬停高亮层（抽屉态） */
+.st-drop {
+  display: none; position: absolute; inset: 0;
+  flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: color-mix(in srgb, var(--mi-accent) 14%, rgba(var(--mi-surface-rgb), 0.55));
+  border: 2px dashed var(--mi-accent);
+  border-radius: 14px;
+  color: var(--mi-tx1); font-size: 12px;
+}
+.st--open.st--dropping .st-drop { display: flex; }
+.st--open.st--dropping .st-item-acts { opacity: 1; }
+.st-drop-icon { font-size: 22px; color: var(--mi-accent); }
+
+/* 钉住提示 */
+.st--pinned .st-head { border-bottom-color: color-mix(in srgb, var(--mi-accent) 40%, transparent); }
+
+/* 轻量提示 */
+.st-toast {
+  position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%);
+  padding: 6px 12px; border-radius: 999px;
+  background: rgba(var(--mi-surface-rgb), 0.94);
+  border: 0.5px solid rgba(var(--mi-overlay-rgb), 0.16);
+  color: var(--mi-tx1); font-size: 11px; white-space: nowrap;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+}
+
+/* 存入 / 移出 过渡动画（v2.3） */
+@keyframes stItemIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.94); }
+  to { opacity: 1; transform: none; }
+}
+.st-item--new { animation: stItemIn 0.26s ease-out; }
+@keyframes stItemOut {
+  0% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.82) translateY(-8px); }
+}
+.st-item--leaving { animation: stItemOut 0.18s ease-in forwards; pointer-events: none; }
+
+/* 减弱动效 */
+.st--reduce-motion .st-capsule,
+.st--reduce-motion .st-cap-grip,
+.st--reduce-motion .st-panel { transition: none !important; animation: none !important; }
+.st--reduce-motion .st--closing .st-panel { animation: none !important; }
+.st--reduce-motion .st-item--new,
+.st--reduce-motion .st-item--leaving { animation: none !important; }
+
+/* ============ v2.4 类型分组卡片模块 ============ */
+.st-group { margin: 2px 0; }
+.st-group-head {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 8px 3px; font-size: 11px; color: var(--mi-tx3);
+}
+.st-group-ico { font-size: 12px; }
+.st-group-name { font-weight: 600; color: var(--mi-tx2); }
+.st-group-n {
+  margin-left: auto; font-size: 10px; color: var(--mi-tx4);
+  background: rgba(var(--mi-overlay-rgb), 0.08); border-radius: 999px; padding: 0 6px;
+}
+.st-group-items { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+/* v2.9 右侧抽屉（垂直态）每组改为单列平铺：去掉 2 列网格，竖排堆叠 */
+.st--left .st-group-items, .st--right .st-group-items {
+  display: flex; flex-direction: column; gap: 6px;
+}
+
+/* v2.11 条目改为紧凑横排（图标 + 名称 + 副信息 + 操作按钮一行排开）。
+   相比 v2.9 的竖排大卡片，单行高度从 ~140px 降到 ~60px，
+   同样的 2/3 行高度内可容纳 2 倍以上文件，面板下方不再被撑满/遮挡。 */
+.st-item-badge { font-size: 16px; width: 22px; }
+.st-item-main { align-items: flex-start; }
+.st-item-name {
+  font-size: 12px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.st-item-sub { font-size: 10px; }
+.st-item-acts { opacity: 0; gap: 3px; }
+.st-item:hover .st-item-acts { opacity: 1; }
+
+/* 拖出必须靠 draggable="true" 提供的 element 值；规范里 auto 只对图片/链接生效，
+   写 auto 会把 draggable 覆盖掉、dragstart 永不触发（已用最小 Electron 探针实证）。绝不要改成 auto/none。
+   操作按钮区维持不可拖，保证「显示/打开/复制/移除」点击稳定。 */
+#stRoot .st-item, #stRoot .st-item * { -webkit-user-drag: element; }
+#stRoot .st-item-acts, #stRoot .st-item-acts * { -webkit-user-drag: none; }
+
+/* v2.12 上/下货架态：多个类型分组横向并排（均衡铺满宽度），避免「图片/文档」纵向堆叠、
+   后一组被挤到滚动区外看不到。面板高度由主进程按展开态动态 setBounds（2行=144 / 3行=204）。
+   - .st-list 改为 row + wrap：分组从左到右并排，超宽自动换行；
+   - .st-group flex: 1 1 40%：2 个分组各占约一半宽，同时可见、均衡填充；
+   - .st-item 必须 flex: 0 0 auto（按内容高度排列），不能 1 1 auto —— 否则被拉伸填满出大空白。 */
+.st--top .st-list, .st--bottom .st-list {
+  display: flex; flex-direction: row; flex-wrap: wrap;
+  align-items: flex-start; gap: 8px;
+}
+.st--top .st-group, .st--bottom .st-group { display: flex; flex-direction: column; align-items: stretch; flex: 1 1 40%; min-width: 0; }
+.st--top .st-group-items, .st--bottom .st-group-items { display: flex; flex-direction: column; gap: 6px; }
+.st--top .st-item, .st--bottom .st-item { width: auto; flex: 0 0 auto; }
+
+/* ============ v2.4 右键菜单（毛玻璃浮层） ============ */
+.st-ctx {
+  position: absolute; z-index: 30; min-width: 144px;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 4px; border-radius: 12px;
+  background: rgba(var(--mi-surface-rgb), 0.92);
+  border: 0.5px solid rgba(var(--mi-overlay-rgb), 0.16);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  overflow: hidden;
+}
+.st-ctx[hidden] { display: none; }
+.st-ctx-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left;
+  padding: 7px 10px; border: none; background: transparent;
+  color: var(--mi-tx1); font-size: 12px; border-radius: 8px; cursor: pointer;
+}
+.st-ctx-item:hover { background: color-mix(in srgb, var(--mi-accent) 22%, transparent); color: var(--mi-tx1); }
+.st-ctx-air { color: var(--mi-accent); font-weight: 600; }
+.st-ctx-del:hover { background: color-mix(in srgb, var(--mi-danger) 26%, transparent); color: var(--mi-danger); }

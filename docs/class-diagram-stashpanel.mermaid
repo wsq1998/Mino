@@ -1,0 +1,80 @@
+%% 中转站浮窗 · 类图（docs/15-增量设计-中转站浮窗.md 附录）
+classDiagram
+  class StashStore {
+    <<module main/core/stash.js (复用)>>
+    +MAX_ITEMS: int = 100
+    +load() Array
+    +persist(items) bool
+    +list() Array~StashItem~
+    +add(p) {ok, item?, items?, error?}
+    +remove(id) {ok, items?}
+    +clear() {ok, items}
+    +stashFile() string
+  }
+  class StashItem {
+    +string id
+    +string path
+    +string name
+    +int size
+    +bool isDir
+    +int addedAt
+    +bool exists  // list() 实时 statSync 刷新
+  }
+  class StashPanel {
+    <<module main/core/stashPanel.js (新增·纯函数)>>
+    +CAPSULE: {w,h}
+    +PANEL: {w}
+    +capsuleRect(workArea, settings) Rect
+    +panelRect(workArea, settings) Rect
+    +hitEdge(cursor, workArea, settings) bool
+    +edgeZone(workArea, settings) Rect
+    +resolvePanelState(prev, event, ctx) PanelState
+    +shouldAutoCollapse(prev, cursor, now, settings) bool
+    +clampRect(rect, workArea) Rect
+  }
+  class PanelState {
+    +string mode  // hidden|capsule|open
+    +bool pinned
+    +bool dragging
+    +Rect rect
+    +bool interactive
+  }
+  class StashWindowController {
+    <<main.js 新增>>
+    -BrowserWindow stashWin
+    +createStashWindow() void
+    +applyPanelState(state) void
+    +toggleStashPanel() void
+    +hideStashPanel() void
+    +startDragOut(ids) void
+  }
+  class TrayController {
+    <<main.js 新增>>
+    -Tray tray
+    +createTray() void
+    +refreshMenu() void
+  }
+  class Settings {
+    <<module main/core/settings.js>>
+    +DEFAULT_SETTINGS
+    +deepMerge(base, patch)
+    +sanitizeSettings(s)
+    +clamp(v, lo, hi)
+    +normUnit(v, lo, hi, fb)
+  }
+  class HotkeyManager {
+    <<main.js 既有 hotkey 体系>>
+    +applyHotkey(acc)
+    +registerHotkeyFromSettings() void
+    +applyStashHotkey(acc) void
+    +registerStashHotkeyFromSettings() void
+  }
+
+  StashWindowController --> StashPanel : 使用纯函数算矩形/状态
+  StashWindowController --> PanelState
+  StashWindowController --> StashStore : 查表还原路径/增删
+  StashWindowController --> HotkeyManager : toggleStashPanel 回调
+  TrayController --> StashWindowController : 显示/隐藏
+  StashStore --> StashItem
+  Settings ..> StashPanel : 读 stash.* 配置
+  Settings ..> StashWindowController : 读/写 stash.*

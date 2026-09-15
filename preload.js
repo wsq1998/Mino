@@ -1,4 +1,17 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+// ===== v2.1 中转站浮窗：拖入取真实路径 =====
+// Electron 中 File.path 已废弃，官方迁移方式是用 webUtils.getPathForFile(file)。
+// File 对象可跨 contextBridge 传递；把取路径函数直接挂到 window，渲染层 drop 时调用。
+// 降级：若运行在旧版 Electron（无 webUtils）则回退读取 file.path。
+contextBridge.exposeInMainWorld('getPathForFile', (file) => {
+  try {
+    if (webUtils && typeof webUtils.getPathForFile === 'function') {
+      return webUtils.getPathForFile(file) || '';
+    }
+  } catch {}
+  return (file && file.path) || '';
+});
 
 contextBridge.exposeInMainWorld('mio', {
   setInteractive: (v) => ipcRenderer.send('mouse-interactive', v),
@@ -107,10 +120,10 @@ contextBridge.exposeInMainWorld('mio', {
   onAlarmFired: (cb) => ipcRenderer.on('alarm-fired', (_e, d) => cb(d)),
   // 快捷启动 App：open -a <name>
   appLaunch: (name) => ipcRenderer.invoke('app-launch', name),
-  // ===== v2.0 新增（F1/F4/F6/F8/F9/F10/F11 常用页核心）=====
+  // v2.1 中转站浮窗：Tray「打开设置」→ 主进程通知主窗口切到设置页
+  onOpenSettings: (cb) => ipcRenderer.on('open-settings', () => cb()),
+  // ===== v2.0 新增（F4/F6/F8/F9/F10/F11 常用页核心）=====
   v2: {
-    // F1 电量提醒：探测电池信息（pct / charging / timeRemaining）
-    batteryInfo: () => ipcRenderer.invoke('v2-battery-info'),
     // F6 网络 IP：内网/公网 + 一键复制
     netInfo: () => ipcRenderer.invoke('v2-net-info'),
     netCopy: (ip) => ipcRenderer.invoke('v2-net-copy', { ip }),
@@ -119,10 +132,45 @@ contextBridge.exposeInMainWorld('mio', {
     // F9 剪贴板图片历史（透传 v1.7.6 已采集的图片项）
     clipImageList: () => ipcRenderer.invoke('v2-clip-image-list'),
     // F10 文件暂存区：CRUD（只存路径引用）
+    // v2.1：stashAdd 兼容 { path } 与 { paths:[...] }；stashRemove 统一传 { id }
     stashList: () => ipcRenderer.invoke('v2-stash-list'),
     stashAdd: (payload) => ipcRenderer.invoke('v2-stash-add', payload || {}),
-    stashRemove: (id) => ipcRenderer.invoke('v2-stash-remove', id),
+    stashRemove: (id) => ipcRenderer.invoke('v2-stash-remove', { id }),
     stashClear: () => ipcRenderer.invoke('v2-stash-clear'),
+    // ===== v2.1 中转站浮窗（见 15-增量设计-中转站浮窗.md §7 IPC 契约）=====
+    // 拖出：渲染层只传节点 id，主进程查表还原真实路径后 startDrag（渲染层看不到路径）
+    stashDragOut: (ids) => ipcRenderer.send('v2-stash-drag-out', { ids: Array.isArray(ids) ? ids : [ids] }),
+    // v2.4 一键 AirDrop 投送：渲染层只传 id，主进程 osascript 调 NSSharingServiceNameSendViaAirDrop
+    stashAirdrop: (id) => ipcRenderer.send('v2-stash-airdrop', { id }),
+    // v2.5 中转站存储目录（临时目录语义）：选择 / 打开 / 查询
+    stashPickDir: () => ipcRenderer.invoke('v2-stash-pick-dir'),
+    stashOpenDir: () => ipcRenderer.invoke('v2-stash-open-dir'),
+    stashGetDir: () => ipcRenderer.invoke('v2-stash-get-dir'),
+    stashDragEnd: () => ipcRenderer.send('v2-stash-drag-end'),
+    // v2.1 P2-1：列表项悬停时预热该项真实拖影图标（主进程按 id 缓存，拖拽时同步命中）
+    stashWarmIcon: (id) => ipcRenderer.send('v2-stash-warm-icon', { id }),
+    // v2.6 端到端诊断：渲染层把 DOM 事件写进主进程 trace（mio-stash-debug.log）
+    stashTrace: (msg) => ipcRenderer.send('v2-stash-trace', msg),
+    // ID-only 安全规则：显示 / 打开 / 复制路径 / 选取，全部只传 id，主进程还原真实路径
+    stashReveal: (id) => ipcRenderer.invoke('v2-stash-reveal', { id }),
+    stashOpen: (id) => ipcRenderer.invoke('v2-stash-open', { id }),
+    stashCopyPath: (id) => ipcRenderer.invoke('v2-stash-copy-path', { id }),
+    stashPick: () => ipcRenderer.invoke('v2-stash-pick'),
+    // 浮窗形态控制（主进程 ↔ stashWin 渲染层）
+    stashPanelState: () => ipcRenderer.invoke('v2-stash-panel-state'),
+    stashPanelToggle: () => ipcRenderer.send('v2-stash-panel-toggle'),
+    stashPanelShow: () => ipcRenderer.send('v2-stash-panel-show'),
+    stashPanelHide: () => ipcRenderer.send('v2-stash-panel-hide'),
+    stashPanelPin: (pinned) => ipcRenderer.invoke('v2-stash-panel-pin', { pinned: !!pinned }),
+    stashPanelHover: (over) => ipcRenderer.send('v2-stash-panel-hover', { over: !!over }),
+    // v2.10 货架展开/收起：通知主进程重算货架面板高度（2行 ⇄ 3行）
+    stashShelfExpand: (expanded) => ipcRenderer.send('v2-stash-shelf-expand', !!expanded),
+    // 浮窗独立快捷键录制（原子注册 + 失败回滚）
+    stashHotkeyRecord: (accelerator) => ipcRenderer.invoke('v2-stash-hotkey-record', { accelerator }),
+    stashHotkeyReset: () => ipcRenderer.invoke('v2-stash-hotkey-reset'),
+    // 主进程 → 渲染层事件
+    onStashChanged: (cb) => ipcRenderer.on('stash-changed', (_e, data) => cb(data)),
+    onStashPanelMode: (cb) => ipcRenderer.on('stash-panel-mode', (_e, data) => cb(data)),
     // ===== v2.0 批次C：状态页 + 系统级（F2/F3/F5/F7/F12）=====
     // F2 隐私占用：拉取当前摄像头/麦克风占用 + 忽略名单
     privacyInfo: () => ipcRenderer.invoke('v2-privacy-info'),

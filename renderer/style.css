@@ -201,38 +201,8 @@ body {
 
 /* ============ v1.5：主题令牌 ============ */
 /* 球体与气泡刻意不参与：深色玻璃是 Mio 的角色身份，不是界面配色 */
-:root {
-  --mi-surface-rgb: 23, 24, 28;     /* 面板 / 详情页底色 */
-  --mi-sunken-rgb: 38, 40, 47;      /* 标签栏 / 凹陷块 */
-  --mi-elevated-rgb: 44, 47, 56;    /* 展开态卡片 */
-  --mi-overlay-rgb: 255, 255, 255;  /* 面板上的白色叠加（描边 / 底纹） */
-  --mi-menu-bg: #26282F;
-  --mi-tx1: #EDEDF0;
-  --mi-tx2: #B9BBC2;
-  --mi-tx3: #888A92;
-  --mi-tx4: #55575F;
-  --mi-accent: #B5D4F4;
-  --mi-accent2: #85B7EB;
-  --mi-on-accent: #17181C;
-  --mi-warn: #E0B84F;
-  --mi-danger: #E06A5A;
-}
-body.theme-light {
-  --mi-surface-rgb: 249, 250, 252;
-  --mi-sunken-rgb: 233, 236, 241;
-  --mi-elevated-rgb: 241, 243, 247;
-  --mi-overlay-rgb: 17, 24, 39;
-  --mi-menu-bg: #FFFFFF;
-  --mi-tx1: #1B1D23;
-  --mi-tx2: #44474E;
-  --mi-tx3: #6C7078;
-  --mi-tx4: #9AA0A8;
-  --mi-accent: #1B5FA8;
-  --mi-accent2: #3A7BC8;
-  --mi-on-accent: #FFFFFF;
-  --mi-warn: #8A6410;
-  --mi-danger: #C0392B;
-}
+/* v2.1：--mi-* 变量已抽到 theme.css（index.html 与 stash.html 共用），此处不再重复定义，
+   避免两处色值漂移。样式里照常引用 var(--mi-*) 即可。 */
 
 /* 浅色下几处需要单独收一下：投影太重会显脏，强调色的半透明叠加也要换深一档的蓝 */
 body.theme-light .panel { box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16); }
@@ -1246,6 +1216,37 @@ body.reduce-motion *::after {
 .clip-del:hover { color: var(--mi-danger); background: rgba(216, 90, 48, 0.16); }
 .clip-empty { font-size: 11px; color: var(--mi-tx4); padding: 8px 2px; text-align: center; }
 
+/* ============ v2.0 F9：剪贴板图片历史分区（并入剪贴板卡片） ============ */
+.clip-img-section { margin-bottom: 10px; }
+.clip-img-title {
+  font-size: 10.5px;
+  color: var(--mi-tx3);
+  margin: 2px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.clip-img-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 6px;
+  max-height: 132px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.clip-img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 0.5px solid rgba(var(--mi-overlay-rgb), 0.14);
+  background: rgba(var(--mi-overlay-rgb), 0.04);
+  transition: transform 0.16s, box-shadow 0.16s, opacity 0.16s;
+}
+.clip-img:hover { transform: scale(1.05); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); }
+.clip-img.copied { opacity: 0.55; }
+
 /* ============ v1.6：快捷操作卡 ============ */
 .qa-row { display: flex; gap: 6px; margin-top: 8px; }
 .qa-row .btn { flex: 1; font-size: 11px; padding: 7px 0; }
@@ -1439,3 +1440,9 @@ body.mio--solid .confirm-box {
 body.mio--solid.theme-light .panel,
 body.mio--solid.theme-light .detail-view { background: rgb(var(--mi-surface-rgb)); }
 body.mio--solid.theme-light .bubble { background: #EDEDF0; color: #1B1D23; }
+
+/* ============ v2.1 中转站：常用页入口卡 ============ */
+/* 列表统一住贴边浮窗面板，这里只留「打开面板」+ 粘贴路径入口 */
+.stash-add { margin-top: 8px; }
+#stashOpenPanelBtn { margin-top: 2px; }
+#stashCard .sub-inline { margin-left: 2px; }
