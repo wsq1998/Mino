@@ -25,10 +25,10 @@ const sunburst = require('./main/core/sunburst.js');   // F12 磁盘空间太阳
 const battery = require('./main/core/battery.js');     // F1 电量提醒：三档判定 + 去重（纯函数）
 const { HOTKEYS: HOTKEY_REGISTRY } = require('./main/core/hotkeys.js'); // 全局热键唯一来源（纯函数注册表）
 const { LANG: I18N_LANG, resolveLang, t: i18nT } = require('./main/i18n.js'); // 通知文案 i18n
-const { LLM_PRESETS, LLM_PRICING, KEYCHAIN_SERVICE } = require('./main/llm/presets.js');
 const { WX_CODES, RAIN_CODES, SNOW_CODES } = require('./main/weather/codes.js');
 const { HOME, SCAN_TARGETS, isBlacklistedPath } = require('./main/clean/targets.js');
 const { PROC_BLACKLIST, STEALTH_APPS, DEEP_LINKS } = require('./main/system/constants.js');
+const { installAi } = require('./main/ai/ipc.js'); // v2.16 AI 助手（本地 Agent）：窗口 + IPC + SSE 转发 + 热键，整体为可安装子系统
 
 const WIN_W = 320;
 const WIN_W_WIDE = 440; // v1.2 详情档：面板 360px + 两侧边距
@@ -60,6 +60,11 @@ let stashDragTimer = null;      // 拖出安全网计时器（防渲染层漏发
 // 每次 resolvePanelState 前注入 settings.stash.shelfExpanded，stashPanel 纯函数据此算货架高度。
 let stashShelfExpanded = false;
 
+// ===== v2.16 AI 助手（本地 Agent）：子系统实例 =====
+// 全部窗口/IPC/SSE/热键逻辑都在 main/ai/ipc.js 内；这里只持有引用，
+// 用于「设置变更 → onSettingsChanged」「退出 → dispose」「显示器变化 → resync」三个钩子。
+let ai = null;
+
 // ===== v2.6 中转站端到端排查日志 =====
 // 唯一诊断信道：同步追加 userData/mio-stash-debug.log（渲染层事件 + 主进程拖出/AirDrop 全链路）。
 // 诊断用途，任何异常都不得影响主流程 —— 因此整函数体包 try/catch 静默。
@@ -75,7 +80,14 @@ function stashTrace(msg) {
 // 默认值是「骨架」，用户配置叠上去，缺失字段自动补齐 —— v1.4 只有 chime/health/stealth
 // 三组，读进来就会自动长出 general/appearance 等新组，老配置文件零改动可用。
 // v1.6 再叠一层：clipboard/capture/hotkey/pomodoro/consent 五个新区，老键名一个不动。
-// v1.8 再叠一层：ai（LLM 聊天）+ onboarding 标记，老键名一个不动。
+// v1.8 再叠一层：ai + onboarding 标记，老键名一个不动。
+// v2.16 把 ai 组整体换成本地 Agent schema —— 这次**做**了迁移（在 sanitizeSettings 里，判据是
+// 「出现任一 AI_LEGACY_KEYS → 整块回默认、enabled 回 false」；键名与理由见 main/core/settings.js）。
+// 不能不做：deepMerge 只补新键、不删旧键，v2.15 的单轮 LLM 字段会当死键赖在 settings.json 里；
+// 同名复用的 model 更险 —— 旧值 'deepseek-chat' 是裸模型名，带进新 schema 会被引擎当非法 prompt.model 400。
+// 死键何时从磁盘消失：读（getSettings）只在内存里 sanitize、不落盘；真正抹掉是在**首次**带 settings 的
+// 写盘（任何 patchSettings），因为那一步写下去的是 sanitize 过的整份对象 —— 旧键不在其中（只写 positions
+// 这类不碰 settings 的 saveState 不会清）。守卫用例：test/core.test.js「整块回默认 / 迁移幂等 / model 两段式」。
 
 function getSettings() {
   const st = loadState();
@@ -96,44 +108,6 @@ function patchSettings(patch) {
   const next = sanitizeSettings(deepMerge(getSettings(), patch || {}));
   saveState({ settings: next });
   return next;
-}
-
-// ============ v1.8 G 组：LLM 服务商预设 / 单价表 / 钥匙串 ============
-// 预设值硬编码于主进程（PRD §5.3 / §6.3）：渲染层只拿「选项名 + 选中值」，不落盘明文 Key。
-// 全部 OpenAI 兼容 /v1/chat/completions；Ollama 用户直接在「自定义」填 http://localhost:11434。
-const keychainAccount = () => os.userInfo().username || process.env.USER || 'mio';
-
-// security CLI 封装（macOS 原生，零第三方依赖）
-function keychainGet() {
-  try {
-    // 丢弃 stderr：无条目时 security 会向 stderr 打印 SecKeychainSearchCopyNext 噪音
-    const out = execFileSync('/usr/bin/security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', keychainAccount(), '-w'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    const v = String(out || '').trim();
-    return v ? v : null;
-  } catch { return null; }
-}
-function keychainSave(key) {
-  if (!key) return { ok: false, error: 'Key 为空' };
-  try {
-    // -U：存在则覆盖，避免先删后写造成窗口期
-    execFileSync('/usr/bin/security', ['add-generic-password', '-a', keychainAccount(), '-s', KEYCHAIN_SERVICE, '-w', key, '-U'], { timeout: 5000 });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String((err && err.message) || err).slice(0, 120) };
-  }
-}
-function keychainDelete() {
-  try {
-    execFileSync('/usr/bin/security', ['delete-generic-password', '-s', KEYCHAIN_SERVICE, '-a', keychainAccount()], { timeout: 5000 });
-  } catch {}
-  return { ok: true };
-}
-// 脱敏串：sk- + 前 2 + 后 4；非 sk- 前缀也按同规则（首 2 + 末 4），保证渲染层永远拿不到完整 Key
-function maskKey(key) {
-  if (!key) return '';
-  const s = String(key);
-  if (s.length <= 8) return '••••••';
-  return `${s.slice(0, 2)}••••••${s.slice(-4)}`;
 }
 
 // ============ v1.5 B：外观与主题 ============
@@ -1205,6 +1179,12 @@ ipcMain.handle('settings-set', (_e, patch) => {
   }
   // v2.1 中转站浮窗：常驻/贴边/快捷键/不透明度等变更即时生效
   if (JSON.stringify(before.stash) !== JSON.stringify(next.stash)) applyStashSettings(before, next);
+  // v2.16 AI 助手：启用/热键/触发边/常驻胶囊任一变更 → 重挂热键 + 重算窗口形态（关闭时连窗口一起收走）
+  // ⚠️ 兜底只许用 console：main.js 没有模块级 log（`log` 只是自检块里的局部函数），
+  //    在 catch 里引用未定义标识符会把异常二次抛出，连带把调用方一起带崩。
+  if (ai && JSON.stringify(before.ai) !== JSON.stringify(next.ai)) {
+    try { ai.onSettingsChanged(); } catch (err) { console.error('[mio-ai] 设置应用失败：' + ((err && err.message) || err)); }
+  }
   return {
     ...next,
     loginItem: readLoginItem(),
@@ -1402,180 +1382,6 @@ function scheduleWeather() {
 
 ipcMain.handle('weather-get', () => getWeather(false));
 ipcMain.handle('weather-refresh', () => getWeather(true));
-
-// ============ v1.8 G 组：LLM 聊天（B4-1） ============
-// 安全红线（PRD §6）：真 key 永不进 IPC 返回值；连通性测试由主进程发起；
-// 对话内容只发往用户配置的 Base URL；无定时/后台 LLM 调用 —— 只有用户点「发送」才发请求。
-const LLM_MONTH_FILE = path.join(app.getPath('userData'), 'mio-llm-month.json'); // 月度花费估算（非对话历史）
-
-function loadLlmMonth() {
-  try { return JSON.parse(fs.readFileSync(LLM_MONTH_FILE, 'utf8')); } catch { return {}; }
-}
-function saveLlmMonth(m) {
-  try { fs.writeFileSync(LLM_MONTH_FILE, JSON.stringify(m)); } catch {}
-}
-// 当月已估算花费（元）：按自然月重置；key 形如 2026-09
-function llmMonthSpent() {
-  const m = loadLlmMonth();
-  const key = (() => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}`; })();
-  if (m.key !== key) return 0;
-  return Number(m.spent) || 0;
-}
-function llmMonthAdd(costYuan) {
-  const m = loadLlmMonth();
-  const d = new Date();
-  const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
-  if (m.key !== key) m.key = key, m.spent = 0;
-  m.spent = Number(m.spent) || 0;
-  m.spent += Number(costYuan) || 0;
-  saveLlmMonth(m);
-  return m.spent;
-}
-
-// 估算 token（展示用，不精确）：ceil(字符数 / 3) —— 中文约 1 token/字，英文约 3 字符/token
-function estTokens(text) {
-  const s = String(text || '');
-  if (!s) return 0;
-  return Math.ceil(s.length / 3);
-}
-// 估算花费（元）：输入 token × 输入单价 + 输出 token × 输出单价（单价为「元 / 千 token」）
-function estCost(provider, inTokens, outTokens) {
-  const p = LLM_PRICING[provider] || LLM_PRICING.custom;
-  return ((inTokens * p.in) + (outTokens * p.out)) / 1000;
-}
-
-// 组装请求消息：只发「system（人设）+ 本次用户消息」，不携带历史（LLM-9 单轮）
-function buildChatMessages(ai, userText) {
-  const persona = (ai && ai.persona) || DEFAULT_SETTINGS.ai.persona;
-  const text = String(userText || '').trim();
-  return [
-    { role: 'system', content: persona },
-    { role: 'user', content: text },
-  ];
-}
-
-// 统一错误分类（渲染层据此显示可读文案，不弹系统窗）
-function llmErrorKind(err) {
-  const msg = String((err && err.message) || err || '');
-  if (/401|403|invalid api|unauthorized|authentication/i.test(msg)) return 'unauthorized';
-  if (/timeout|aborted|abort/i.test(msg)) return 'timeout';
-  if (/fetch failed|network|ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|socket/i.test(msg)) return 'network';
-  if (/429|rate limit|quota/i.test(msg)) return 'quota';
-  if (/404|not found/i.test(msg)) return 'notfound';
-  return 'error';
-}
-
-// 主进程发起 OpenAI 兼容 chat 请求（零依赖：Node 内置 fetch + AbortSignal.timeout）
-async function llmRequest({ baseUrl, model, apiKey, maxTokens, userText, minimal = false }) {
-  const url = String(baseUrl || '').trim().replace(/\/+$/, '') + '/chat/completions';
-  const body = {
-    model,
-    max_tokens: Number(maxTokens) || 512,
-    // minimal=true 时只发最小请求（连通性测试，不消耗对话额度）
-    messages: minimal
-      ? [{ role: 'user', content: 'hi' }]
-      : buildChatMessages(getSettings().ai, userText),
-  };
-  const res = await fetch(url, {
-    method: 'POST',
-    signal: AbortSignal.timeout(8000),
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const j = await res.json();
-  const out = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-  if (typeof out !== 'string') throw new Error('返回结构异常');
-  return { text: out.trim(), usage: (j && j.usage) || null };
-}
-
-// 单轮对话（LLM-9 / LLM-10）：调用前检查配置与月度上限；调用后累计估算花费
-async function llmChat(userText) {
-  const ai = getSettings().ai;
-  const apiKey = keychainGet();
-  if (!ai.enabled) return { ok: false, kind: 'disabled', error: 'AI 对话未启用' };
-  if (!apiKey) return { ok: false, kind: 'nokey', error: '还没保存 API Key' };
-  if (!ai.baseUrl || !ai.model) return { ok: false, kind: 'unconfigured', error: '还没配置 Base URL 或模型名' };
-  if (!String(userText || '').trim()) return { ok: false, kind: 'empty', error: '输入为空' };
-  // LLM-7：月度花费上限（估算护栏）—— 达到即停止调用
-  const cap = Number(ai.monthlyCap) || 0;
-  if (cap > 0 && llmMonthSpent() >= cap) {
-    return { ok: false, kind: 'cap', error: '本月额度已用完', spent: llmMonthSpent(), cap };
-  }
-  try {
-    const inTokens = estTokens(JSON.stringify(buildChatMessages(ai, userText)));
-    const r = await llmRequest({ model: ai.model, apiKey, maxTokens: ai.maxTokens, userText });
-    const outTokens = estTokens(r.text);
-    const cost = estCost(ai.provider, inTokens, outTokens);
-    const spent = llmMonthAdd(cost);
-    return {
-      ok: true,
-      reply: r.text,
-      estTokens: inTokens + outTokens,
-      estCost: cost,
-      spent,
-      cap: cap > 0 ? cap : null,
-    };
-  } catch (err) {
-    return { ok: false, kind: llmErrorKind(err), error: String((err && err.message) || err).slice(0, 160) };
-  }
-}
-
-// 连通性测试（LLM-5）：主进程发起最小请求，渲染层只显示结果；不消耗对话额度
-async function llmTest() {
-  const ai = getSettings().ai;
-  if (!ai.baseUrl || !ai.model) return { ok: false, kind: 'unconfigured', error: '还没配置 Base URL 或模型名' };
-  const apiKey = keychainGet();
-  if (!apiKey) return { ok: false, kind: 'nokey', error: '先保存 API Key 再测试' };
-  try {
-    await llmRequest({ model: ai.model, apiKey, maxTokens: 16, minimal: true });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, kind: llmErrorKind(err), error: String((err && err.message) || err).slice(0, 160) };
-  }
-}
-
-// ===== v1.8 G 组 IPC =====
-// llm-get-config：返回 G 组配置 + 预设表 + 脱敏 Key（真 key 永不进 IPC）
-function llmGetConfig() {
-  const ai = getSettings().ai;
-  return {
-    ok: true,
-    ai: {
-      enabled: ai.enabled,
-      provider: ai.provider,
-      baseUrl: ai.baseUrl,
-      model: ai.model,
-      monthlyCap: ai.monthlyCap,
-      maxTokens: ai.maxTokens,
-      persona: ai.persona,
-    },
-    presets: Object.keys(LLM_PRESETS).map((k) => ({ id: k, label: LLM_PRESETS[k].label })),
-    pricing: LLM_PRICING,
-    keyMasked: maskKey(keychainGet()),
-    spent: llmMonthSpent(),
-  };
-}
-ipcMain.handle('llm-get-config', () => llmGetConfig());
-// llm-save-key：把 Key 写入钥匙串（security add-generic-password -U）；永远不回传真 key
-ipcMain.handle('llm-save-key', (_e, payload) => {
-  const key = payload && payload.key;
-  if (!key || !String(key).trim()) return { ok: false, error: 'Key 为空' };
-  const r = keychainSave(String(key).trim());
-  return r.ok ? { ok: true, keyMasked: maskKey(String(key).trim()) } : r;
-});
-// llm-delete-key：删除钥匙串条目
-ipcMain.handle('llm-delete-key', () => {
-  keychainDelete();
-  return { ok: true, keyMasked: '' };
-});
-// llm-test：连通性测试（主进程发起）
-ipcMain.handle('llm-test', () => llmTest());
-// llm-chat：单轮对话（仅用户主动发问）
-ipcMain.handle('llm-chat', (_e, payload) => llmChat(payload && payload.text));
 
 // ============ v1.8 B4-2：首次启动引导 ============
 // 老用户不弹：只有 settings.onboarding.done 不是 true 才显示三步全屏引导。
@@ -2477,10 +2283,36 @@ app.whenReady().then(() => {
   try { createStashWindow(); } catch {}
   createTray();
   registerStashHotkeyFromSettings();
-  // 多显示器 / 拔屏 / 分辨率变化 → 重算吸附矩形，防窗口丢到屏外
-  screen.on('display-added', resyncStashPanel);
-  screen.on('display-removed', resyncStashPanel);
-  screen.on('display-metrics-changed', resyncStashPanel);
+  // v2.16 AI 助手（本地 Agent）：注入依赖后由子系统自己拉起胶囊/热键。
+  // 引擎是懒启动的（首次 send 或手动点「启动引擎」才 spawn），这里只装窗口与热键。
+  //
+  // ⚠️ 两个坑，都是真机 GUI 启动才暴露的（`node --check` 查不出未定义标识符）：
+  //   1. main.js **没有**模块级 log 函数（`log` 只在 2341 行的自检块里局部定义）。
+  //      先前这里直接写 `log` / `log: log` → ReferenceError。
+  //   2. 更致命的是 catch 里也用了 `log` —— 异常在 catch 中再次抛出、逃逸出 whenReady() 的
+  //      promise，把它后面的启动步骤（多显示器钩子、剪贴板、天气、磁盘采样、自检）**全部跳过**。
+  //      所以这里的兜底只许用 console（永远可用），且 AI 装配失败绝不允许影响主流程。
+  const aiLog = (m) => { try { console.log('[mio-ai] ' + m); } catch {} };
+  try {
+    ai = installAi({
+      ipcMain, BrowserWindow, screen, dialog, app,
+      getSettings, patchSettings, globalShortcut,
+      notify: (title, body) => { try { new Notification({ title, body, silent: false }).show(); } catch {} },
+      log: aiLog,
+    });
+    ai.bootstrap();
+  } catch (err) {
+    ai = null;
+    try { console.error('[mio-ai] 装配失败（助手不可用，其余功能不受影响）：' + ((err && err.stack) || err)); } catch {}
+  }
+  // 多显示器 / 拔屏 / 分辨率变化 → 重算吸附矩形，防窗口丢到屏外（中转站 + AI 助手都要重算）
+  const onDisplayChange = () => {
+    resyncStashPanel();
+    if (ai) { try { ai.resync(); } catch {} }
+  };
+  screen.on('display-added', onDisplayChange);
+  screen.on('display-removed', onDisplayChange);
+  screen.on('display-metrics-changed', onDisplayChange);
   // v1.6 B2-1：剪贴板采集（依 E1 开关）
   if (getSettings().clipboard.enabled) startClip();
   // v1.7 天气：启动先取一次（失败静默，不弹任何打扰），再按 F3 频率轮询
@@ -3153,29 +2985,14 @@ app.whenReady().then(() => {
           skipped: up.skipped === 'autotest',
           noNetwork: up.ok === false,
         }));
-        // LLM：配置拉取（无 Key 时 keyMasked 为空串，真 key 永不进 IPC）
-        const llmCfg = llmGetConfig();
-        log('V18_LLM: ' + JSON.stringify({
-          ok: llmCfg && llmCfg.ok === true,
-          hasAi: !!(llmCfg && llmCfg.ai),
-          presets5: !!(llmCfg && llmCfg.presets && llmCfg.presets.length === 5),
-          keyMaskedEmpty: !!(llmCfg && llmCfg.keyMasked === ''),
-          spent0: !!(llmCfg && llmCfg.spent === 0),
-        }));
-        // LLM 未启用时 llm-chat 必须拒绝（不联网、不发请求）
-        const llmChatOff = await llmChat('hi');
-        log('V18_LLM_OFF: ' + JSON.stringify({
-          okFalse: llmChatOff && llmChatOff.ok === false,
-          kind: llmChatOff && llmChatOff.kind,
-        }));
-        // 渲染层 G 组 UI 存在（设置页 AI 助手组 + 常用页聊天卡）
+        // 渲染层 G 组 UI 存在（设置页 AI 助手（本地 Agent）组）
         await js(`document.querySelector('[data-tab="settings"]').click()`);
         await sleep(500);
         log('V18_SETGROUPS: ' + await js(`JSON.stringify({
           groups: [...document.querySelectorAll('#page-settings .sgroup')].map(g => g.dataset.group).join(','),
           hasAiGroup: !!document.getElementById('swAi'),
-          hasSegAi: !!document.getElementById('segAiProvider'),
-          hasAiSave: !!document.getElementById('aiSaveBtn'),
+          hasAgent: !!document.getElementById('selAiAgent'),
+          hasEngineCard: !!document.getElementById('aiEngineState'),
           hasUpdateCheck: !!document.getElementById('updateCheckBtn'),
         })`));
         await shot('electron-v18-settings.png');

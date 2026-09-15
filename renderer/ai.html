@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Mio · AI 助手</title>
+<!-- CSP：助手窗口只通过 preload 暴露的 IPC 说话，禁止渲染层直接联网（尤其是引擎端口） -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'">
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="ai.css">
+</head>
+<body>
+  <!-- AI 助手根节点：三态一体（与中转站同构范式，docs/16 §6.1）
+         .ai--capsule 贴边细条常驻 / .ai--bar 输入条（唤醒后默认态）/ .ai--open 面板（执行流）
+         data-side  触发边 top|bottom|left|right（独立于中转站）
+         data-run   运行态 idle|running|waiting|error —— 驱动状态点语义 -->
+  <div id="aiRoot" class="ai ai--capsule" data-mode="capsule" data-side="right" data-run="idle">
+
+    <!-- ── 胶囊态：贴边细条。状态点即全部信息量 ── -->
+    <div id="aiCapsule" class="ai-capsule" role="button" tabindex="0"
+         title="点击打开 AI 助手 · 拖文件到这里问我">
+      <span class="ai-dot" id="aiCapDot" aria-hidden="true"></span>
+      <span class="ai-cap-label" aria-hidden="true">AI</span>
+    </div>
+
+    <!-- ── 输入条态 & 面板态：同一个 shell，靠 .ai--open 决定是否露出执行流 ── -->
+    <section id="aiShell" class="ai-shell" aria-label="AI 助手">
+
+      <header class="ai-head" id="aiHead">
+        <span class="ai-dot" id="aiDot" aria-hidden="true"></span>
+        <span class="ai-title">AI 助手</span>
+        <span class="ai-engine" id="aiEngine" title="本地 opencode 引擎状态">
+          <span class="ai-engine-dot" aria-hidden="true"></span>
+          <span id="aiEngineText">未连接</span>
+        </span>
+        <span class="ai-spacer"></span>
+        <button class="ai-ic" id="aiNewBtn" type="button" title="新会话（保留历史）" aria-label="新会话">＋</button>
+        <button class="ai-ic" id="aiCollapseBtn" type="button" title="收起为输入条（Esc）" aria-label="收起为输入条">▾</button>
+        <button class="ai-ic" id="aiHideBtn" type="button" title="收起" aria-label="收起">✕</button>
+      </header>
+
+      <!-- 执行流：一个 turn 不是「一句回复」，而是一条可展开的流（docs/16 §6.2） -->
+      <div class="ai-stream" id="aiStream" role="log" aria-live="polite"></div>
+
+      <div class="ai-empty" id="aiEmpty">
+        <div class="ai-empty-mark" aria-hidden="true">⟩</div>
+        <div class="ai-empty-title">交代一件事，回车就干</div>
+        <div class="ai-empty-sub">
+          它能读你电脑上的文件、跑命令、改代码 —— 边干边让你看见，危险处停下来问你。<br>
+          也可以把文件直接拖进来。
+        </div>
+      </div>
+
+      <div class="ai-queue" id="aiQueue" hidden></div>
+
+      <!-- 唯一的输入框：输入条态与面板态共用同一个节点，避免双输入框焦点同步的坑 -->
+      <div class="ai-inputrow" id="aiInputRow">
+        <div class="ai-inputwrap">
+          <span class="ai-prompt" aria-hidden="true">⟩</span>
+          <textarea id="aiInput" class="ai-input" rows="1" spellcheck="false" autocomplete="off"
+                    placeholder="交代一件事，回车就干…" aria-label="指令输入"></textarea>
+        </div>
+        <button class="ai-ic ai-ic--stop" id="aiStopBtn" type="button" title="中止（⌘.）" aria-label="中止" hidden>⏹</button>
+        <button class="ai-ic ai-ic--send" id="aiSendBtn" type="button" title="执行（Enter）" aria-label="执行">⏎</button>
+      </div>
+
+      <div class="ai-hint" id="aiHint">
+        <span><b>Enter</b> 执行</span>
+        <span><b>⇧Enter</b> 换行</span>
+        <span><b>↑</b> 历史</span>
+        <span id="aiHintMore"><b>Esc</b> 收起</span>
+      </div>
+    </section>
+
+    <!-- 轻量提示（复制成功 / 引擎错误等） -->
+    <div class="ai-toast" id="aiToast" hidden></div>
+
+    <!-- 拖拽悬停高亮层（.ai--dropping 时显示） -->
+    <div class="ai-drop" id="aiDropHint" aria-hidden="true">
+      <span class="ai-drop-icon">↓</span>
+      <span class="ai-drop-text">松手，把它交给 AI 助手</span>
+    </div>
+  </div>
+
+  <script src="aiEventMap.js"></script>
+  <script src="ai.js"></script>
+</body>
+</html>

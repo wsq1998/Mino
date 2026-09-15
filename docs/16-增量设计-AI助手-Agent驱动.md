@@ -160,7 +160,7 @@ POST /session/{sessionID}/prompt_async
 
 这套事件名直接决定 UI 能做到多细：
 
-| 阶段 | 事件 |
+| 阶段 | 事件（**API 词表**；实际行为见下面的 §4.4.1 校正） |
 |---|---|
 | **正文流式** | `session.next.text.started` → `.text.delta` → `.text.ended` |
 | **思维链** | `session.next.reasoning.started` → `.delta` → `.ended` |
@@ -171,7 +171,31 @@ POST /session/{sessionID}/prompt_async
 | **会话态** | `session.status` · `session.idle` · `session.error` · `session.diff` |
 | **消息/part** | `message.updated` · `message.part.updated` · `message.part.delta` |
 
-→ **结论**：`tool.called/progress/success/failed` 四态 + `text.delta` + `reasoning.delta` **足以支撑 §6 的执行流卡片做实时更新**，无需轮询。
+#### 4.4.1 ⚠️ 实测校正：`session.next.*` 在 1.17.9 上**不发正文/工具**（2026-09 补）
+
+上表前四行抄自 API 词表（87 种事件名确实都存在），**但真机行为不是这样**。在 opencode **1.17.9** 上跑真实提问、抓 `GET /global/event` 原始帧，实测：
+
+| 事件 | 次数 | 说明 |
+|---|---|---|
+| `message.part.delta` | 53 | 正文与思维链的**全部增量** |
+| `message.part.updated` | 7 | 全量快照，`part.type ∈ text｜reasoning｜tool｜step-start｜step-finish` |
+| `session.next.agent.switched` / `.model.switched` | 各 1 | 仅此两个 |
+| **`session.next.text.delta`** | **0** | **一次都没出现** |
+| **`session.next.tool.*`** | **0** | **一次都没出现** |
+
+**→ 正文流式 / 思维链 / 工具调用 / 步骤 / token 用量在 1.17.9 上全部走 `message.part.*`；`session.next.*` 只剩会话级的 `agent.switched` / `model.switched`。**
+
+**渲染层必须实现 `message.part.*`**；只认 `session.next.*` 会让正文区永远空白（P1 曾因此出现「只转圈、不出字」）。`session.next.*` 分支可保留作引擎演进兜底，但**它不是主路径**。
+
+**`message.part.delta`** 载荷：`{ sessionID, messageID, partID, field:'text', delta }`
+⚠️ `field` 恒为 `'text'`（指「该 part 的 `text` 字段」），**思维链 part 的增量也走 `field:'text'`** → 必须靠 `message.part.updated` 建立的 `partID → kind` 映射回查，**绝不能用 `field` 判断是不是正文**。
+
+**`message.part.updated`** 载荷：`{ sessionID, part:{…全量快照…}, time }`。同一个 `part.id`（工具卡按 `callID`）会**多次**推送、状态递进 → 必须**原地更新**，不能每帧新建卡片。
+另：用户自己那条提问的 `text` part 也会被推回来（`messageID` == `message.updated` 里 `role:'user'` 的 `info.id`）→ 必须按 messageID 跳过，否则提问会被当成回复重画一遍。
+
+⚠️ **非 0 退出不会出现 `status:'error'`**：实测 `exit 3` 的命令，工具 part 最终仍是 `{ status:'completed', metadata:{ exit:3 } }`，全程**无** `'error'` 状态、也**无** `session.error`。**唯一失败信号是 `state.metadata.exit`** —— 只看 `status` 会把失败命令画成绿色成功。
+
+→ **结论**：支撑 §6 执行流卡片实时更新的是 `message.part.delta` + `message.part.updated`（骨架态由 `part.state.status` 的 `pending → running → completed` 递进，成/败再由 `metadata.exit` 判定），**无需轮询**。
 
 ### 4.5 Agent 与权限（实测）
 
@@ -288,9 +312,11 @@ POST /session/{sessionID}/prompt_async
  ├────────────────>│ ai-send ───────────>│ 懒启动/复用引擎 ───>│ (GET /global/health)
  │                 │                     │ 确保 session ──────>│ POST /session
  │                 │                     │ prompt_async ──────>│ POST /session/:id/prompt_async
- │                 │<── ai-event(SSE) ───│<── /global/event ──│  session.next.text.delta
- │  看到逐字输出    │  (逐帧重绘执行流)    │   (SSE 解析→转发)   │  session.next.tool.called
- │ 点⏹ / 等完成    │                     │                    │  …tool.success
+ │                 │<── ai-event(SSE) ───│<── /global/event ──│  message.part.delta
+ │  看到逐字输出    │  (逐帧重绘执行流)    │   (SSE 解析→转发)   │  message.part.updated
+ │ 点⏹ / 等完成    │                     │                    │   ├ text / reasoning
+ │                 │                     │                    │   ├ tool（同一 callID 递进 5 次）
+ │                 │                     │                    │   └ step-finish（token）
  │                 │                     │                    │  session.idle
 ```
 

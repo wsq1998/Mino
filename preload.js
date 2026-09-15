@@ -96,12 +96,6 @@ contextBridge.exposeInMainWorld('mio', {
   dedupeCancel: () => ipcRenderer.invoke('dedupe-cancel'),
   onDedupeProgress: (cb) => ipcRenderer.on('dedupe-progress', (_e, data) => cb(data)),
   // ===== v1.8 新增 =====
-  // G 组 AI 助手（LLM 聊天）：Key 永不进 IPC 返回值，只拿脱敏串
-  llmGetConfig: () => ipcRenderer.invoke('llm-get-config'),
-  llmSaveKey: (key) => ipcRenderer.invoke('llm-save-key', { key }),
-  llmDeleteKey: () => ipcRenderer.invoke('llm-delete-key'),
-  llmTest: () => ipcRenderer.invoke('llm-test'),
-  llmChat: (text) => ipcRenderer.invoke('llm-chat', { text }),
   // B4-2 首次启动引导
   onboardingGet: () => ipcRenderer.invoke('onboarding-get'),
   onboardingSet: (payload) => ipcRenderer.invoke('onboarding-set', payload || {}),
@@ -123,6 +117,45 @@ contextBridge.exposeInMainWorld('mio', {
   // v2.1 中转站浮窗：Tray「打开设置」→ 主进程通知主窗口切到设置页
   onOpenSettings: (cb) => ipcRenderer.on('open-settings', () => cb()),
   // ===== v2.0 新增（F4/F6/F8/F9/F10/F11 常用页核心）=====
+  // ===== v2.16 AI 助手（本地 Agent，opencode serve 引擎）=====
+  // 安全铁律：引擎端口与密码永不进渲染层。这里只是通道，渲染层只能通过 ai-* IPC 间接说话。
+  // 与 main/ai/ipc.js 注册的 IPC 面保持 1:1（invoke 需要回执 / send 不需要 / on 是订阅）。
+  ai: {
+    // —— 渲染层 → 主进程：要回执 ——
+    engineStatus: () => ipcRenderer.invoke('ai-engine-status'),
+    engineStart: () => ipcRenderer.invoke('ai-engine-start'),
+    engineStop: () => ipcRenderer.invoke('ai-engine-stop'),
+    engineLog: () => ipcRenderer.invoke('ai-engine-log'),
+    newSession: () => ipcRenderer.invoke('ai-session-new'),
+    sessionList: () => ipcRenderer.invoke('ai-session-list'),
+    send: (payload) => ipcRenderer.invoke('ai-send', payload || {}),
+    abort: () => ipcRenderer.invoke('ai-abort'),
+    permissionReply: (payload) => ipcRenderer.invoke('ai-permission-reply', payload || {}),
+    questionReply: (payload) => ipcRenderer.invoke('ai-question-reply', payload || {}),
+    diff: () => ipcRenderer.invoke('ai-diff'),
+    agents: () => ipcRenderer.invoke('ai-agents'),
+    commands: () => ipcRenderer.invoke('ai-commands'),
+    recent: () => ipcRenderer.invoke('ai-recent'),
+    clearRecent: () => ipcRenderer.invoke('ai-clear-recent'),
+    pickWorkspace: () => ipcRenderer.invoke('ai-pick-workspace'),
+    windowState: () => ipcRenderer.invoke('ai-window-state'),
+    hotkeyRecord: (accelerator) => ipcRenderer.invoke('ai-hotkey-record', { accelerator }),
+    hotkeyReset: () => ipcRenderer.invoke('ai-hotkey-reset'),
+    // —— 渲染层 → 主进程：不等待回执 ——
+    pushRecent: (text) => ipcRenderer.send('ai-push-recent', { text }),
+    windowShow: () => ipcRenderer.send('ai-window-show'),
+    windowExpand: () => ipcRenderer.send('ai-window-expand'),
+    windowCollapse: () => ipcRenderer.send('ai-window-collapse'),
+    windowHide: () => ipcRenderer.send('ai-window-hide'),
+    windowToggle: () => ipcRenderer.send('ai-window-toggle'),
+    windowWake: () => ipcRenderer.send('ai-window-wake'),
+    // —— 主进程 → 渲染层：订阅 ——
+    // onEvent 是执行流的唯一来源（SSE 事件经主进程过滤后转发，绝不含引擎凭据）
+    onMode: (cb) => ipcRenderer.on('ai-window-mode', (_e, d) => cb(d)),
+    onRun: (cb) => ipcRenderer.on('ai-run', (_e, d) => cb(d)),
+    onEvent: (cb) => ipcRenderer.on('ai-event', (_e, d) => cb(d)),
+    onStatus: (cb) => ipcRenderer.on('ai-engine-status', (_e, d) => cb(d)),
+  },
   v2: {
     // F6 网络 IP：内网/公网 + 一键复制
     netInfo: () => ipcRenderer.invoke('v2-net-info'),

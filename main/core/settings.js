@@ -2,10 +2,15 @@
 // B4-4 拆分：从 main.js 抽出。零行为变化 —— 只搬定义，不动逻辑。
 // 依赖：无（不 require electron/app/win），保证纯函数可单测。
 
-const SETTINGS_VERSION = 9;
+const SETTINGS_VERSION = 10;
+
+// v2.16 迁移标记：只属于「v2.15 及以前的单轮 LLM 聊天」的 ai 键。
+// 只要出现任意一个，就说明这份 ai 块是旧特性，整块按默认重建（详见 sanitizeSettings 里的说明）。
+// 注意不含 enabled / model —— 这两个键新旧同名，判据必须靠独有键才可靠。
+const AI_LEGACY_KEYS = ['provider', 'baseUrl', 'monthlyCap', 'maxTokens', 'persona'];
 
 const DEFAULT_SETTINGS = {
-  _v: 9,
+  _v: 10,
   general: { autoOpen: false, lang: 'auto' }, // v2.0 ENG-2：zh | en | auto（默认跟随系统）
   appearance: {
     theme: 'dark',        // dark | light —— 跟随系统在 S3 接入
@@ -59,17 +64,19 @@ const DEFAULT_SETTINGS = {
     pausedUntil: null, // 毫秒时间戳：暂停到该时刻（「暂停 7 天」温和档位；手动扫描不受影响）
     lastRun: null,     // { t, freed, moved, items } —— 面板回溯「上次自动清理：时间/释放/清了什么」
   },
-  // v1.8 G 组：AI 助手（LLM 聊天）。Key 永不落盘 —— 只存 macOS 钥匙串（service=mio-llm）。
+  // v2.16 AI 助手（本地 Agent，opencode serve 引擎）。Key 由 opencode 自己管，Mio 不再碰钥匙串。
   ai: {
-    enabled: false,          // LLM-1：关 → 球体不出现对话入口、任何 IPC 不发请求
-    provider: 'deepseek',    // LLM-2：deepseek | zhipu | qwen | openai | custom
-    baseUrl: 'https://api.deepseek.com/v1', // LLM-4：随预设自动填，可改
-    model: 'deepseek-chat',  // LLM-4：随预设自动填，可改
-    monthlyCap: 0,           // LLM-7：每月花费上限（元，估算护栏；0 = 不限制）
-    maxTokens: 512,          // LLM-6：单次最大回复长度（64–2048，默认 512）
-    persona: `你是 Mio，一个住在用户 macOS 桌面上的小机器人伙伴。
-你说话简短、亲切、偶尔俏皮；你了解用户电脑的实时状态（CPU、内存、磁盘、天气）。
-你不知道的问题就老实说不知道，不编造。回答控制在 3-5 句以内。`, // LLM-8 默认人设
+    enabled: false,              // 总开关；关 → 不启引擎、不显示任何入口
+    enginePath: '',              // 空 = 自动探测
+    autoStart: true,             // 首次需要时自动拉起引擎
+    workspace: '',               // 空 = ~/Mio Workspace
+    agent: 'build',              // 默认 agent（角色）
+    model: '',                   // 空 = 用 opencode 配置里的默认模型
+    edgeSide: 'right',           // top|bottom|left|right（独立于中转站）
+    showCapsule: true,           // 常驻边缘胶囊
+    hotkey: 'Alt+A',             // 默认 ⌥A；注册前经 main/core/hotkeys.js 的 validate() 校验
+    notifyOnDone: true,          // 完成后发系统通知
+    recent: [],                  // 最近提交文本（≤50，本地，可清空）
   },
   // v1.8 B4-2：首次启动引导标记。done=true 表示已引导过（老用户不弹）
   onboarding: { done: false },
@@ -149,18 +156,36 @@ function sanitizeSettings(s) {
     s.autoClean.pausedUntil = Number.isFinite(pu) && pu > Date.now() ? pu : null;
     if (!s.autoClean.lastRun || typeof s.autoClean.lastRun !== 'object') s.autoClean.lastRun = null;
   }
-  // v1.8 ai：脏数据收口 —— maxTokens 夹到 64–2048，monthlyCap 非负数字，persona 空回退默认
+  // v2.16 ai：脏数据收口（本地 Agent schema）—— 布尔 !! / 字符串空回退 / 枚举白名单 / 数组截断到最近 50
   if (s.ai && typeof s.ai === 'object') {
+    // ── v9 → v10 迁移 ──────────────────────────────────────────────
+    // v2.15 及以前的 ai 组是「单轮 LLM 聊天」（provider / baseUrl / monthlyCap / maxTokens / persona），
+    // 和 v2.16 的「本地 Agent 助手」不是同一个东西，只是共用了 ai 这个键名。
+    // deepMerge 不会删旧键，所以不主动清就会在 settings.json 里留下永久幽灵字段；
+    // 更危险的是被复用的 model：旧值 'deepseek-chat' 是个裸模型名，而 opencode 的
+    // prompt.model 要求 providerID + modelID 同时存在，照发出去每次都会 400。
+    // 因此判据不是「有没有旧键」而是「这份 ai 块属于旧特性」→ 整块回默认（enabled:false）。
+    // 语义上也是对的：新助手默认关，用户去设置页看到引擎状态再自己开。
+    if (AI_LEGACY_KEYS.some((k) => Object.prototype.hasOwnProperty.call(s.ai, k))) {
+      s.ai = { ...DEFAULT_SETTINGS.ai };
+    }
     s.ai.enabled = !!s.ai.enabled;
-    const mt = Number(s.ai.maxTokens);
-    s.ai.maxTokens = Number.isFinite(mt) ? clamp(Math.round(mt), 64, 2048) : 512;
-    const cap = Number(s.ai.monthlyCap);
-    s.ai.monthlyCap = Number.isFinite(cap) && cap > 0 ? Math.round(cap) : 0;
-    s.ai.provider = ['deepseek', 'zhipu', 'qwen', 'openai', 'custom'].includes(s.ai.provider)
-      ? s.ai.provider : 'deepseek';
-    if (typeof s.ai.baseUrl !== 'string' || !s.ai.baseUrl.trim()) s.ai.baseUrl = DEFAULT_SETTINGS.ai.baseUrl;
-    if (typeof s.ai.model !== 'string' || !s.ai.model.trim()) s.ai.model = DEFAULT_SETTINGS.ai.model;
-    if (typeof s.ai.persona !== 'string' || !s.ai.persona.trim()) s.ai.persona = DEFAULT_SETTINGS.ai.persona;
+    s.ai.autoStart = !!s.ai.autoStart;
+    s.ai.showCapsule = !!s.ai.showCapsule;
+    s.ai.notifyOnDone = !!s.ai.notifyOnDone;
+    s.ai.enginePath = (typeof s.ai.enginePath === 'string' && s.ai.enginePath.trim()) ? s.ai.enginePath.trim() : '';
+    s.ai.workspace = (typeof s.ai.workspace === 'string' && s.ai.workspace.trim()) ? s.ai.workspace.trim() : '';
+    // model 只接受「provider/model」两段式 —— 与 main/ai/ruleset.js 的 parseModel 同构，
+    // 且只有两段齐全时才会真的塞进 prompt body（见 main/ai/ipc.js 的 ai-send）。
+    // 裸模型名一律丢弃：与其发出去被引擎 400，不如老实回落到引擎默认模型。
+    const aiModel = typeof s.ai.model === 'string' ? s.ai.model.trim() : '';
+    s.ai.model = /^[^/\s]+\/[^/\s]+$/.test(aiModel) ? aiModel : '';
+    s.ai.agent = (typeof s.ai.agent === 'string' && s.ai.agent.trim()) ? s.ai.agent.trim() : 'build';
+    s.ai.edgeSide = ['top', 'bottom', 'left', 'right'].includes(s.ai.edgeSide) ? s.ai.edgeSide : 'right';
+    s.ai.hotkey = (typeof s.ai.hotkey === 'string' && s.ai.hotkey.trim()) ? s.ai.hotkey.trim() : DEFAULT_SETTINGS.ai.hotkey;
+    s.ai.recent = Array.isArray(s.ai.recent)
+      ? s.ai.recent.filter((x) => typeof x === 'string' && x.trim() !== '').slice(-50)
+      : [];
   }
   // v1.9 主面板功能开关：倒计时 / 快捷启动 / 番茄钟统计 —— 布尔收口
   s.countdown.enabled = !!s.countdown.enabled;

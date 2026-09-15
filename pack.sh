@@ -32,6 +32,8 @@ cp -R main "$APP/Contents/Resources/app/main"
 cp renderer/index.html renderer/style.css renderer/app.js "$APP/Contents/Resources/app/renderer/"
 # v2.1 中转站浮窗资源：漏改会导致打包后浮窗白屏
 cp renderer/stash.html renderer/stash.js renderer/stash.css renderer/theme.css "$APP/Contents/Resources/app/renderer/"
+# v2.16 AI 助手窗口资源：与浮窗同一个坑 —— 漏注入则打包后助手窗口白屏（test/aiCss.test.js 有守卫）
+cp renderer/ai.html renderer/ai.js renderer/aiEventMap.js renderer/ai.css "$APP/Contents/Resources/app/renderer/"
 
 # 4. 元信息
 # ⚠️ 版本号必须显式写入：否则 plist 会残留 Electron.app 自带的版本号（如 33.4.11）

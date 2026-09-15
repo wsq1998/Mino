@@ -151,16 +151,6 @@
         <div class="set-note">列表在屏幕贴边的「中转站」浮窗里；拖入 = 复制进中转站目录（源文件保留不动），拖出 = 从目录取出，源文件绝不移动 / 删除</div>
       </div>
       <button class="btn wide" id="homeToSettings">打开设置</button>
-      <!-- v1.8 G 组：AI 对话入口（在设置里启用后才显示） -->
-      <div class="card" id="chatCard" hidden>
-        <div class="label">问 Mio <span class="sub-inline" id="chatModel"></span></div>
-        <div id="chatLog" class="chat-log"></div>
-        <div class="chat-input-row">
-          <input type="text" id="chatInput" class="stext" placeholder="问点什么…" maxlength="500" autocomplete="off">
-          <button class="btn" id="chatSendBtn">发送</button>
-        </div>
-        <div class="set-note" id="chatFoot">单轮对话 · 不携带历史</div>
-      </div>
     </div>
 
     <!-- 状态 -->
@@ -494,38 +484,51 @@
         </div>
       </details>
 
-      <!-- v1.8 G 组：AI 助手（LLM 聊天） -->
+      <!-- v2.16 G 组：AI 助手（本地 Agent，opencode serve 引擎） -->
       <details class="sgroup" data-group="ai">
-        <summary class="sgroup-h"><span class="sg-name">AI 助手</span><span class="sg-brief" id="sgBrief-ai"></span></summary>
+        <summary class="sgroup-h"><span class="sg-name">AI 助手（本地 Agent）</span><span class="sg-brief" id="sgBrief-ai"></span></summary>
         <div class="sgroup-b">
-          <div class="set-row"><span>启用 AI 对话</span><label class="switch"><input type="checkbox" id="swAi"><i></i></label></div>
-          <div class="set-note">开启后在「常用」页出现对话入口；Key 只存 macOS 钥匙串，绝不写入磁盘</div>
-          <div class="set-row"><span>服务商</span>
-            <div class="seg" id="segAiProvider">
-              <button data-v="deepseek">DeepSeek</button><button data-v="zhipu">智谱</button><button data-v="qwen">通义</button><button data-v="openai">OpenAI</button><button data-v="custom">自定义</button>
-            </div>
-          </div>
-          <div class="set-row"><span>Base URL</span><input type="text" id="aiBaseUrl" class="stext" placeholder="https://api.deepseek.com/v1" maxlength="200"></div>
-          <div class="set-row"><span>模型</span><input type="text" id="aiModel" class="stext" placeholder="deepseek-chat" maxlength="80"></div>
-          <div class="set-row"><span>API Key</span><span class="set-val ellip" id="aiKeyStatus">未保存</span></div>
-          <div class="set-row"><input type="password" id="aiKeyInput" class="stext" placeholder="粘贴 API Key（仅存钥匙串）" maxlength="200"></div>
+          <div class="set-row"><span>启用 AI 助手</span><label class="switch"><input type="checkbox" id="swAi"><i></i></label></div>
+          <div class="set-note">关闭后不启动引擎、不显示任何入口</div>
+          <div class="set-row"><span>引擎状态</span><span class="set-val" id="aiEngineState">检测中…</span></div>
+          <div class="set-note ellip" id="aiEnginePath">—</div>
           <div class="stealth-actions">
-            <button class="btn tiny" id="aiKeySaveBtn">保存 Key</button>
-            <button class="btn tiny danger" id="aiKeyDelBtn">删除</button>
-            <button class="btn tiny" id="aiTestBtn">测试连接</button>
+            <button class="btn tiny" id="aiEngineRefreshBtn">重新检测</button>
+            <button class="btn tiny" id="aiEngineStartBtn">启动引擎</button>
           </div>
-          <div id="aiTestResult" class="sub"></div>
-          <div class="set-row"><span>单次最大回复</span>
-            <div class="seg" id="segAiMaxTokens">
-              <button data-v="128">128</button><button data-v="256">256</button><button data-v="512">512</button><button data-v="1024">1024</button>
-            </div>
+          <div class="set-row"><span>自动拉起</span><label class="switch"><input type="checkbox" id="swAiAutoStart"><i></i></label></div>
+          <div class="set-note">首次需要时自动拉起 opencode serve 引擎；关闭后需手动点「启动引擎」</div>
+          <div class="set-row"><span>工作区</span><span class="set-val ellip" id="aiWorkspaceText">默认 ~/Mio Workspace</span></div>
+          <div class="stealth-actions"><button class="btn tiny" id="aiWorkspacePick">选择目录</button></div>
+          <div class="set-note">Agent 读写文件的根目录；留空用默认 ~/Mio Workspace</div>
+          <div class="set-row"><span>角色</span>
+            <select id="selAiAgent" class="sselect"><option value="build">build</option></select>
           </div>
-          <div class="set-row"><span>每月花费上限（元）</span><input type="number" id="aiCap" class="stext" min="0" step="1" placeholder="0 = 不限制" maxlength="8"></div>
-          <div class="set-note" id="aiSpent">本月已用约 ¥0</div>
-          <div class="set-row"><span>人设</span></div>
-          <textarea id="aiPersona" class="stext ta" rows="4" maxlength="600" placeholder="Mio 的人设与说话风格"></textarea>
-          <div class="stealth-actions"><button class="btn wide" id="aiSaveBtn">保存 AI 设置</button></div>
-          <div class="set-note">对话内容只发往你配置的服务商；Mio 不做定时/后台调用，只有你点「发送」才发请求。单轮对话不携带历史。</div>
+          <div class="set-note">默认 build（可读可写可执行）；引擎提供的其他角色会列在这里</div>
+          <div class="set-row"><span>模型</span><span class="set-val ellip" id="aiModelText">用引擎默认</span></div>
+          <div class="set-note">空 = 用 opencode 配置里的默认模型，模型由引擎侧管理</div>
+          <div class="set-row"><span>触发边</span>
+            <select id="selAiEdge" class="sselect">
+              <option value="top">上</option>
+              <option value="bottom">下</option>
+              <option value="left">左</option>
+              <option value="right">右</option>
+            </select>
+          </div>
+          <div class="set-note">独立于中转站浮窗的触发边</div>
+          <div class="set-row"><span>常驻边缘胶囊</span><label class="switch"><input type="checkbox" id="swAiCapsule"><i></i></label></div>
+          <div class="set-note">在屏幕边缘常驻一个可点击的入口胶囊</div>
+          <div class="set-row"><span>呼出快捷键</span><button class="keyrec" id="aiKeyRec">⌥A</button></div>
+          <div class="keyrec-actions">
+            <button class="btn tiny" id="aiKeyRecBtn">录制</button>
+            <button class="btn tiny" id="aiKeyReset">恢复默认</button>
+          </div>
+          <div class="set-note" id="aiKeyHint">点「录制」后按下新组合（至少含 ⌘ / ⌃ / ⌥ 之一）；默认 ⌥A</div>
+          <div class="set-row"><span>完成后系统通知</span><label class="switch"><input type="checkbox" id="swAiNotify"><i></i></label></div>
+          <div class="set-row"><span>最近提交</span><span class="set-val" id="aiRecentCount">0 条</span></div>
+          <div class="stealth-actions"><button class="btn tiny danger" id="aiClearRecentBtn">清除历史</button></div>
+          <div class="set-note" id="aiRecentNote">仅本机保留最近 50 条提交文本，可随时清空</div>
+          <div class="set-note">所有执行都在你本机的 opencode 引擎内完成，仅在你配置的模型服务商处调用大模型。</div>
         </div>
       </details>
 
@@ -553,7 +556,7 @@
         <div class="sgroup-b">
           <div class="set-row"><span>数据存放位置</span><span class="set-val ellip" id="dataPath">—</span></div>
           <div class="stealth-actions"><button class="btn tiny" id="dataShowBtn">在访达中显示</button></div>
-          <div class="set-note" id="privacyNote">Mio 的 CPU / 内存 / 磁盘 / 电池 / 剪贴板数据<b>全部只在本机处理，从不上传</b>。唯一会联网的两项：① 天气（先经免 key 地理服务按 IP 取城市/坐标，再发给 wttr.in）② 未来开启 AI 对话后（发送你输入的内容到你配置的服务商）。</div>
+          <div class="set-note" id="privacyNote">Mio 的 CPU / 内存 / 磁盘 / 电池 / 剪贴板数据<b>全部只在本机处理，从不上传</b>。唯一会联网的两项：① 天气（先经免 key 地理服务按 IP 取城市/坐标，再发给 wttr.in）② AI 助手的本地 Agent（所有执行都在你本机的 opencode 引擎内完成，仅在你配置的模型服务商处调用大模型）。</div>
           <div class="set-row"><span>清除所有本地数据</span><button class="btn tiny danger" id="dataWipeBtn">清除…</button></div>
           <div class="set-note">重置全部设置、采样、消息与清理历史（移入废纸篓，可在废纸篓找回）。<b>需要重启 Mio 才生效</b>，操作前会二次确认。</div>
         </div>
