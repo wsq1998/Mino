@@ -136,7 +136,14 @@ test('panelRect top：贴顶部横向货架（默认 2 行高，宽受 PANEL_MAX
   const r = sp.panelRect(WA_MAIN, { stash: { edgeSide: 'top' } });
   assert.equal(r.y, WA_MAIN.y);
   assert.equal(r.height, 2 * sp.SHELF_ROW_H + sp.SHELF_PAD_H); // 默认 2 行 = 144
-  assert.ok(r.width >= 200 && r.width <= 640);
+  // v2.15 货架加宽：PANEL_MAX_W 640→980，1440 屏下货架宽从 640 提到 980（屏宽-112 仍大于 980）
+  assert.ok(r.width >= 200 && r.width <= 980);
+  assert.equal(r.width, 980, '1440 屏下 top 货架应取到 PANEL_MAX_W=980（不再被 640 卡死）');
+});
+
+test('panelRect top：超宽屏货架宽收敛到 PANEL_MAX_W（不随屏无限加宽）', () => {
+  const r = sp.panelRect({ x: 0, y: 0, width: 2560, height: 1440 }, { stash: { edgeSide: 'top' } });
+  assert.equal(r.width, 980, '2560 宽屏下货架也应收敛到 980，不铺满全屏');
 });
 
 test('panelRect top：shelfExpanded=true 时高度变为 3 行（444）', () => {

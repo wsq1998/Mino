@@ -26,7 +26,10 @@ const SHELF_PAD_H = 24;           // 货架高度余量（头部/内边距，px�
 const PANEL = { w: PANEL_W, h: 0 };
 const PANEL_MARGIN_Y = 56;        // 垂直抽屉纵向内缩基准（px）
 const PANEL_MARGIN_X = 56;        // 水平抽屉横向内缩基准（px）
-const PANEL_MAX_W = 640;          // 水平货架最大宽度（避免随屏过宽）
+// v2.15 顶/底货架最大宽度：640 → 980。货架是贴边的横向条，不遮挡屏中内容，
+// 更宽能让多个类型分组（row+wrap）并排展示更多文件、减少纵向滚动。980 ≈ 常见 1080p/1440p
+// 屏宽的 2/3，既明显加宽又不至于像全屏横条那样突兀。小屏（< 屏宽-112）仍按屏宽自动收敛。
+const PANEL_MAX_W = 980;          // 水平货架最大宽度（避免随屏过宽）
 const PANEL_MAX_RATIO = 0.66;     // 垂直抽屉最大占屏比例（限高，避免接近全屏）
 const EDGE_MARGIN = 10;           // 触边容差（v2.2 由 8 → 10，让「拖到 Mio」更易命中）
 
