@@ -23,6 +23,7 @@ const bluetooth = require('./main/core/bluetooth.js'); // F3 蓝牙设备电量�
 const uninstaller = require('./main/core/uninstall.js'); // F7 应用卸载器（safeTrash 封装）
 const sunburst = require('./main/core/sunburst.js');   // F12 磁盘空间太阳图（du 扫描 + 缓存）
 const battery = require('./main/core/battery.js');     // F1 电量提醒：三档判定 + 去重（纯函数）
+const { HOTKEYS: HOTKEY_REGISTRY } = require('./main/core/hotkeys.js'); // 全局热键唯一来源（纯函数注册表）
 const { LANG: I18N_LANG, resolveLang, t: i18nT } = require('./main/i18n.js'); // 通知文案 i18n
 const { LLM_PRESETS, LLM_PRICING, KEYCHAIN_SERVICE } = require('./main/llm/presets.js');
 const { WX_CODES, RAIN_CODES, SNOW_CODES } = require('./main/weather/codes.js');
@@ -2407,8 +2408,9 @@ ipcMain.handle('dedupe-cancel', () => {
 });
 
 // ============ v1.6 B2-3：召唤快捷键（录制器 + 原子回滚）============
-const DEFAULT_HOTKEY = 'Alt+Space';
-const RESERVED_HOTKEY = 'Alt+H'; // ⌥H 恒定兜底，不可覆盖
+// 常量值统一取自 main/core/hotkeys.js（唯一来源），行为与原硬编码完全等价。
+const DEFAULT_HOTKEY = HOTKEY_REGISTRY.mainWindow;   // 'Alt+Space'
+const RESERVED_HOTKEY = HOTKEY_REGISTRY.reserved;    // 'Alt+H' 恒定兜底，不可覆盖
 let hotkeyRegistered = true;     // 召唤键是否成功注册（供 UI 提示）
 
 // 给错误文案用的可读组合（⌥Space / ⌘⇧M）
@@ -4016,7 +4018,7 @@ ipcMain.on('v2-stash-drag-end', () => {
 });
 
 // ---- 浮窗独立全局快捷键（原子注册 + 失败回滚，仿主窗口 hotkey 体系 main.js:2384-2424）----
-const DEFAULT_STASH_HOTKEY = 'Alt+Shift+Space';
+const DEFAULT_STASH_HOTKEY = HOTKEY_REGISTRY.stash; // 'Alt+Shift+Space'（唯一来源：main/core/hotkeys.js）
 const applyStashHotkey = (acc) => {
   const next = String(acc || '').trim();
   if (!next) return { ok: false, error: '快捷键为空' };
